@@ -1,0 +1,127 @@
+"use server";
+
+import { revalidatePath } from "next/cache";
+import { requireUser, requireAdmin, hashPassword, verifyPassword } from "@/lib/auth";
+import { db, newId } from "@/lib/db";
+
+async function fileToDataUrl(f: File | null, maxBytes: number) {
+  if (!f || f.size === 0) return null;
+  if (f.size > maxBytes) throw new Error("Filen är för stor.");
+  if (!/^image\/(png|jpeg|webp|svg\+xml|gif)$/.test(f.type)) throw new Error("Endast bildfiler.");
+  return `data:${f.type};base64,${Buffer.from(await f.arrayBuffer()).toString("base64")}`;
+}
+
+export type FormState = { ok?: string; error?: string };
+
+export async function saveProfile(_: FormState, fd: FormData): Promise<FormState> {
+  const user = await requireUser();
+  try {
+    const photo = await fileToDataUrl(fd.get("photo") as File | null, 400_000);
+    const classes = ["A1/A3", "A2", "STS-01", "STS-02"].filter((c) => fd.get(`lic_${c}`));
+    db.prepare(
+      `UPDATE users SET first_name=?, last_name=?, default_drone_id=?, theme=?, license_number=?, license_expiry=?, license_classes=?${photo ? ", photo=?" : ""} WHERE id=?`
+    ).run(
+      ...[
+        String(fd.get("first_name") || "").trim(),
+        String(fd.get("last_name") || "").trim(),
+        String(fd.get("default_drone_id") || "") || null,
+        String(fd.get("theme") || "system"),
+        String(fd.get("license_number") || "").trim() || null,
+        String(fd.get("license_expiry") || "") || null,
+        JSON.stringify(classes),
+        ...(photo ? [photo] : []),
+        user.id,
+      ]
+    );
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : "Kunde inte spara." };
+  }
+  revalidatePath("/", "layout");
+  return { ok: "Sparat." };
+}
+
+export async function changePassword(_: FormState, fd: FormData): Promise<FormState> {
+  const user = await requireUser();
+  const row = db.prepare("SELECT password_hash FROM users WHERE id = ?").get(user.id) as { password_hash: string };
+  if (!verifyPassword(String(fd.get("current") || ""), row.password_hash)) return { error: "Nuvarande lösenord stämmer inte." };
+  const pw = String(fd.get("new") || "");
+  if (pw.length < 8) return { error: "Minst 8 tecken." };
+  db.prepare("UPDATE users SET password_hash = ? WHERE id = ?").run(hashPassword(pw), user.id);
+  db.prepare("DELETE FROM sessions WHERE user_id = ? AND token NOT IN (SELECT token FROM sessions WHERE user_id = ? ORDER BY expires_at DESC LIMIT 1)").run(user.id, user.id);
+  return { ok: "Lösenordet är ändrat." };
+}
+
+/* ---------- organisation ---------- */
+
+export async function saveOrg(_: FormState, fd: FormData): Promise<FormState> {
+  const user = await requireAdmin();
+  try {
+    const logo = await fileToDataUrl(fd.get("logo") as File | null, 300_000);
+    const y = Number(fd.get("wind_yellow")) || 8;
+    const r = Math.max(y + 0.5, Number(fd.get("wind_red")) || 12);
+    db.prepare(`UPDATE orgs SET name=?, wind_yellow=?, wind_red=?${logo ? ", logo_url=?" : ""} WHERE id=?`).run(
+      ...[String(fd.get("name") || "").trim() || user.org_name, y, r, ...(logo ? [logo] : []), user.org_id]
+    );
+    if (fd.get("remove_logo")) db.prepare("UPDATE orgs SET logo_url = NULL WHERE id = ?").run(user.org_id);
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : "Kunde inte spara." };
+  }
+  revalidatePath("/", "layout");
+  return { ok: "Sparat." };
+}
+
+export async function addMember(_: FormState, fd: FormData): Promise<FormState> {
+  const user = await requireAdmin();
+  const email = String(fd.get("email") || "").trim().toLowerCase();
+  const pw = String(fd.get("password") || "");
+  if (!email.includes("@")) return { error: "Ogiltig e-post." };
+  if (pw.length < 8) return { error: "Tillfälligt lösenord måste vara minst 8 tecken." };
+  if (db.prepare("SELECT 1 FROM users WHERE email = ?").get(email)) return { error: "E-postadressen finns redan." };
+  db.prepare("INSERT INTO users (id, org_id, email, password_hash, first_name, last_name, role) VALUES (?, ?, ?, ?, ?, ?, ?)").run(
+    newId(), user.org_id, email, hashPassword(pw), String(fd.get("first_name") || ""), String(fd.get("last_name") || ""), String(fd.get("role") || "pilot")
+  );
+  revalidatePath("/org");
+  return { ok: `${email} har lagts till. Dela det tillfälliga lösenordet med personen.` };
+}
+
+export async function setRole(userId: string, fd: FormData) {
+  const admin = await requireAdmin();
+  if (userId === admin.id) return;
+  db.prepare("UPDATE users SET role = ? WHERE id = ? AND org_id = ?").run(String(fd.get("role")), userId, admin.org_id);
+  revalidatePath("/org");
+}
+
+export async function removeMember(userId: string) {
+  const admin = await requireAdmin();
+  if (userId === admin.id) return;
+  db.prepare("DELETE FROM users WHERE id = ? AND org_id = ?").run(userId, admin.org_id);
+  revalidatePath("/org");
+}
+
+export async function addZone(fd: FormData) {
+  const user = await requireUser();
+  const lat = Number(fd.get("lat")), lon = Number(fd.get("lon"));
+  if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
+  db.prepare("INSERT INTO zones (id, org_id, name, lat, lon, radius_m) VALUES (?, ?, ?, ?, ?, ?)").run(
+    newId(), user.org_id, String(fd.get("name") || "Zon"), lat, lon, Math.round(Number(fd.get("radius")) || 500)
+  );
+  revalidatePath("/org");
+  revalidatePath("/briefings/new");
+}
+
+export async function zoneFromBriefing(briefingId: string) {
+  const user = await requireUser();
+  const b = db.prepare("SELECT name, lat, lon, radius_m FROM briefings WHERE id = ? AND org_id = ?").get(briefingId, user.org_id) as
+    | { name: string; lat: number; lon: number; radius_m: number }
+    | undefined;
+  if (!b) return;
+  db.prepare("INSERT INTO zones (id, org_id, name, lat, lon, radius_m) VALUES (?, ?, ?, ?, ?, ?)").run(newId(), user.org_id, b.name, b.lat, b.lon, b.radius_m);
+  revalidatePath("/org");
+  revalidatePath(`/briefings/${briefingId}`);
+}
+
+export async function removeZone(id: string) {
+  const user = await requireUser();
+  db.prepare("DELETE FROM zones WHERE id = ? AND org_id = ?").run(id, user.org_id);
+  revalidatePath("/org");
+}
