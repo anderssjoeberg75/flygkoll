@@ -7,6 +7,7 @@ import { fmtDateTime, fmtTime, STATUS_LABEL, SEVERITY_LABEL, compass } from "@/l
 import { GeoMap } from "@/components/GeoMap";
 import { WindProfile } from "@/components/WindProfile";
 import { PrintButton } from "@/components/PrintButton";
+import { AffectedAreasTable } from "@/components/AffectedAreasTable";
 import { rerunBriefing, toggleShare, renameBriefing } from "../actions";
 import { zoneFromBriefing } from "../../settings/actions";
 
@@ -100,36 +101,11 @@ export default async function BriefingPage({ params }: { params: Promise<{ id: s
       </div>
 
       <div className="card" style={{ marginTop: 16 }}>
-        <div className="spread">
+        <div className="spread" style={{ marginBottom: 12 }}>
           <h2>Berörda områden</h2>
           <span className="small muted">Skyddsobjekt ingår inte – kontrollera separat.</span>
         </div>
-        {permission.length === 0 ? (
-          <div className="notice n-info"><strong>Inga särskilda områden</strong>Operationsområdet överlappar inga restriktions-, kontroll- eller skyddsområden i datakällorna.</div>
-        ) : (
-          <div className="table-wrap">
-            <table>
-              <thead><tr><th>Område</th><th>Typ</th><th>Status</th><th>Höjd</th><th>Vad gäller</th></tr></thead>
-              <tbody>
-                {permission.map((h, i) => (
-                  <tr key={i}>
-                    <td><strong>{h.name}</strong>{h.validity && <div className="small muted">{h.validity}</div>}</td>
-                    <td className="small">{h.layerLabel}</td>
-                    <td><span className={`badge ${SEVERITY_LABEL[h.severity].cls}`}>{SEVERITY_LABEL[h.severity].text}</span></td>
-                    <td className="small">{h.lower || h.upper ? `${h.lower || "?"} – ${h.upper || "?"}` : "–"}</td>
-                    <td className="small">{h.rule}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-        {info.length > 0 && (
-          <details style={{ marginTop: 10 }}>
-            <summary className="small">{info.length} informationsområden (Natura 2000, tillåtande zoner)</summary>
-            <ul className="small">{info.map((h, i) => <li key={i}>{h.name} – {h.layerLabel}</li>)}</ul>
-          </details>
-        )}
+        <AffectedAreasTable hits={r.hits} />
       </div>
 
       <div className="grid g2" style={{ marginTop: 16, alignItems: "start" }}>

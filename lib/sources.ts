@@ -263,11 +263,16 @@ export async function protectedAreas(bbox: [number, number, number, number]) {
   return fc.features.map((f) => ({
     ...f,
     properties: {
+      ...f.properties,
       name: f.properties?.NAMN,
       kind: f.properties?.SKYDDSTYP,
       authority: f.properties?.FORVALTARE,
       nvrid: f.properties?.NVRID,
       status: f.properties?.BESLUTSSTATUS,
+      county: f.properties?.LAN,
+      municipality: f.properties?.KOMMUN,
+      decisionAuthority: f.properties?.BESLUTSMYNDIGHET,
+      iucn: f.properties?.IUCNKATEGORI,
     },
   })) as Feature[];
 }

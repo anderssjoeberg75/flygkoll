@@ -51,9 +51,17 @@ export function GeoMap({
             style: () => ({ color: st.color, weight: 2, dashArray: st.dash, fillOpacity: st.fill ?? 0.1 }),
             onEachFeature: (f, layer) => {
               const p = f.properties || {};
+              let extra = "";
+              if (p.severity === "permission") {
+                extra += `<br/><a href="https://www.lfv.se/dronare" target="_blank" rel="noopener noreferrer" style="color:#0f766e;font-weight:600;font-size:12px;display:inline-block;margin-top:4px;">Sök tillstånd (LFV) ↗</a>`;
+              }
+              if (k === "NR" || k === "NP") {
+                extra += `<br/><a href="https://skyddadnatur.naturvardsverket.se/" target="_blank" rel="noopener noreferrer" style="color:#0f766e;font-weight:600;font-size:12px;display:inline-block;margin-top:4px;">Skyddad natur (Naturvårdsverket) ↗</a>`;
+              }
               layer.bindPopup(
                 `<strong>${esc(p.name)}</strong><br/>${esc(st.label)}${p.severity ? ` · ${esc(SEV_TEXT[p.severity] ?? p.severity)}` : ""}` +
-                  (p.lower || p.upper ? `<br/>Höjd: ${esc(p.lower)} – ${esc(p.upper)}` : "")
+                  (p.lower || p.upper ? `<br/>Höjd: ${esc(p.lower)} – ${esc(p.upper)}` : "") +
+                  extra
               );
             },
           });
