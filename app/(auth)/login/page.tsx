@@ -13,7 +13,11 @@ export default async function LoginPage() {
     <AuthForm
       mode="login"
       action={login}
-      footer={process.env.FLYGKOLL_OPEN_SIGNUP === "1" ? <p className="small muted">Inget konto? <Link href="/register">Registrera dig</Link></p> : null}
+      footer={
+        <p className="small muted">
+          Inget konto? <Link href="/register">Registrera dig</Link>
+        </p>
+      }
     />
   );
 }

@@ -48,7 +48,7 @@ export async function register(_: AuthState, fd: FormData): Promise<AuthState> {
   const lastName = String(fd.get("last_name") || "").trim();
   const orgName = String(fd.get("org") || "").trim() || `${firstName || email}s organisation`;
   const userCount = (db.prepare("SELECT COUNT(*) AS n FROM users").get() as { n: number }).n;
-  if (userCount > 0 && process.env.FLYGKOLL_OPEN_SIGNUP !== "1") {
+  if (userCount > 0 && process.env.FLYGKOLL_OPEN_SIGNUP === "0") {
     return { error: "Registrering är stängd. Be en administratör lägga till dig under Organisation." };
   }
   if (!email.includes("@")) return { error: "Ange en giltig e-postadress." };
