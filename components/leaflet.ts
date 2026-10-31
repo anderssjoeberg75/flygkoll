@@ -35,7 +35,7 @@ export const LAYER_STYLE: Record<string, { color: string; label: string; dash?: 
   SUP: { color: "#b91c1c", label: "AIP SUP", dash: "8 4" },
   NOTAM: { color: "#f59e0b", label: "NOTAM-område", dash: "3 3" },
   UAS: { color: "#9333ea", label: "UAS-zon", fill: 0.12 },
-  NP: { color: "#15803d", label: "Nationalpark", fill: 0.15 },
-  NR: { color: "#65a30d", label: "Naturreservat/NVO", fill: 0.1 },
-  N2000: { color: "#0d9488", label: "Natura 2000", dash: "2 3", fill: 0.05 },
+  NP: { color: "#15803d", label: "Nationalpark", fill: 0.25, dash: "6 3" },
+  NR: { color: "#16a34a", label: "Skyddat område / Naturreservat", fill: 0.22, dash: "5 4" },
+  N2000: { color: "#0d9488", label: "Natura 2000", dash: "2 3", fill: 0.06 },
 };

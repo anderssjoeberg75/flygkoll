@@ -256,6 +256,11 @@ a.badge.link-badge:hover {
   display: inline-flex;
   align-items: center;
   gap: 2px;
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  font-family: inherit;
 }
 .sub-link:hover {
   color: var(--accent);

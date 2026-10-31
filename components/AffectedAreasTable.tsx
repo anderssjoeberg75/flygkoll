@@ -34,6 +34,18 @@ export function AffectedAreasTable({ hits }: { hits: AreaHit[] }) {
 
   const details: AreaDetails | null = selectedHit ? getAreaDetails(selectedHit) : null;
 
+  function showOnMap(h: AreaHit) {
+    window.dispatchEvent(
+      new CustomEvent("flygkoll:highlight-area", {
+        detail: { name: h.name, layer: h.layer },
+      })
+    );
+    const el = document.getElementById("briefing-map");
+    if (el) {
+      el.scrollIntoView({ behavior: "smooth", block: "center" });
+    }
+  }
+
   return (
     <>
       {permission.length === 0 ? (
@@ -128,7 +140,16 @@ export function AffectedAreasTable({ hits }: { hits: AreaHit[] }) {
                       </div>
 
                       {/* Snabblänkar direkt i tabellen */}
-                      <div className="row small" style={{ marginTop: 6, gap: 8 }}>
+                      <div className="row small" style={{ marginTop: 6, gap: 10, flexWrap: "wrap" }}>
+                        <button
+                          type="button"
+                          onClick={() => showOnMap(h)}
+                          className="sub-link"
+                          style={{ color: "var(--accent)", fontWeight: 600 }}
+                          title="Fokusera och markera detta område på kartan ovan"
+                        >
+                          🗺️ Visa på kartan
+                        </button>
                         {det.infoUrl && (
                           <a
                             href={det.infoUrl}
@@ -243,7 +264,19 @@ export function AffectedAreasTable({ hits }: { hits: AreaHit[] }) {
               {/* Tillstånd & Länkar */}
               <div className="info-section">
                 <h3 className="section-title">🔗 Tillstånd, dispens & officiell information</h3>
-                <div className="row" style={{ gap: 10, marginTop: 8 }}>
+                <div className="row" style={{ gap: 10, marginTop: 8, flexWrap: "wrap" }}>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      showOnMap(selectedHit);
+                      setSelectedHit(null);
+                    }}
+                    className="btn secondary"
+                    style={{ display: "inline-flex", alignItems: "center", gap: 6 }}
+                    title="Zooma in och markera området på kartan"
+                  >
+                    🗺️ Visa på kartan
+                  </button>
                   {details.permitUrl && (
                     <a
                       href={details.permitUrl}

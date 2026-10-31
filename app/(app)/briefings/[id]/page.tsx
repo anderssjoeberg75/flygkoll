@@ -87,7 +87,7 @@ export default async function BriefingPage({ params }: { params: Promise<{ id: s
       </div>
 
       <div className="grid" style={{ gridTemplateColumns: "minmax(0,2fr) minmax(260px,1fr)", marginTop: 16, alignItems: "start" }}>
-        <div className="card">
+        <div className="card" id="briefing-map">
           <div className="row small muted" style={{ marginBottom: 8 }}>
             <span>☀ Soluppgång {fmtTime(r.sun.sunrise)}</span>
             <span>☾ Solnedgång {fmtTime(r.sun.sunset)}</span>
