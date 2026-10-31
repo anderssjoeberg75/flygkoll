@@ -4,12 +4,17 @@ import { StateForm } from "@/components/StateForm";
 import { saveProfile, changePassword } from "./actions";
 
 export default async function Settings() {
-  const user = await requireUser();
+  const user = await requireUser(true);
   const drones = listDrones(user.org_id);
   const classes: string[] = JSON.parse(user.license_classes || "[]");
   return (
     <>
       <div className="page-head"><div><h1>Inställningar</h1><p className="muted" style={{ margin: 0 }}>{user.email}</p></div></div>
+      {Boolean(user.must_change_password) && (
+        <div className="banner" style={{ background: "var(--warn-bg, #fef3c7)", color: "var(--warn-fg, #92400e)", padding: "12px 16px", borderRadius: "8px", marginBottom: "16px", border: "1px solid var(--warn-border, #fcd34d)" }}>
+          ⚠️ <strong>Du har ett tillfälligt lösenord.</strong> Vänligen byt lösenord i formuläret till höger för att få full tillgång till systemet.
+        </div>
+      )}
       <div className="grid" style={{ gridTemplateColumns: "minmax(0,2fr) minmax(260px,1fr)", alignItems: "start" }}>
         <StateForm action={saveProfile}>
           <h2>Profil</h2>

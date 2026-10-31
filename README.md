@@ -20,6 +20,16 @@ Därefter är registreringen stängd; lägg till fler användare under **Organis
 All data ligger i SQLite-filen `data/flygkoll.db` (ändra med `FLYGKOLL_DB=/sökväg/fil.db`).
 Långsamma kartdata från Naturvårdsverket cachas i `data/cache/` i 7 dagar.
 
+### Säkerhetskopiering (SQLite WAL-läge)
+
+Eftersom databasen körs i WAL-läge (`PRAGMA journal_mode = WAL`) kan en enkel filkopiering av `flygkoll.db` leda till inkonsekvent data om en skrivning pågår. Använd därför SQLites inbyggda säkra online-backup:
+
+```bash
+sqlite3 data/flygkoll.db ".backup 'data/flygkoll-backup-$(date +%F).db'"
+```
+
+Alternativt kan verktyg som [Litestream](https://litestream.io/) användas för kontinuerlig automatisk replikering till S3/molnlagring.
+
 ### Köra på servern (Ubuntu, systemd)
 
 ```ini

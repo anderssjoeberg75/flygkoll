@@ -6,24 +6,103 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import crypto from "node:crypto";
 
-const UA = "Flygkoll/0.1 (personal drone briefing)";
+const CONTACT = process.env.FLYGKOLL_CONTACT || "https://github.com/anderssjoeberg75/flygkoll";
+const UA = `Flygkoll/0.1 (${CONTACT})`;
+
+/* ---------- LRU Minnescache (#9) ---------- */
+
+class LruCache<T> {
+  private max: number;
+  private map = new Map<string, { at: number; ttl: number; data: T }>();
+
+  constructor(max = 500) {
+    this.max = max;
+  }
+
+  get(key: string): T | undefined {
+    const entry = this.map.get(key);
+    if (!entry) return undefined;
+    if (Date.now() - entry.at > entry.ttl) {
+      this.map.delete(key);
+      return undefined;
+    }
+    // Uppdatera åtkomstordning
+    this.map.delete(key);
+    this.map.set(key, entry);
+    return entry.data;
+  }
+
+  set(key: string, data: T, ttl: number) {
+    if (this.map.has(key)) {
+      this.map.delete(key);
+    } else if (this.map.size >= this.max) {
+      const oldestKey = this.map.keys().next().value;
+      if (oldestKey) this.map.delete(oldestKey);
+    }
+    this.map.set(key, { at: Date.now(), ttl, data });
+  }
+}
+
+const memoryCache = new LruCache<unknown>(500);
+
+/* ---------- Nominatim rate limiting (max 1 anrop/sekund, #11) ---------- */
+
+let lastNominatimRequestTime = 0;
+const nominatimQueue: (() => void)[] = [];
+let nominatimTimer: NodeJS.Timeout | null = null;
+
+function processNominatimQueue() {
+  if (nominatimQueue.length === 0) {
+    nominatimTimer = null;
+    return;
+  }
+  const now = Date.now();
+  const waitMs = Math.max(0, 1050 - (now - lastNominatimRequestTime));
+  nominatimTimer = setTimeout(() => {
+    lastNominatimRequestTime = Date.now();
+    const nextFn = nominatimQueue.shift();
+    if (nextFn) nextFn();
+    processNominatimQueue();
+  }, waitMs);
+}
+
+function throttleNominatim<T>(fn: () => Promise<T>): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    nominatimQueue.push(async () => {
+      try {
+        const res = await fn();
+        resolve(res);
+      } catch (err) {
+        reject(err);
+      }
+    });
+    if (!nominatimTimer) {
+      processNominatimQueue();
+    }
+  });
+}
 
 /* ---------- fetch helpers ---------- */
 
-const cache = new Map<string, { at: number; data: unknown }>();
-
 async function fetchWithTimeout(url: string, ms = 15000, init: RequestInit = {}, retries = 1): Promise<Response> {
+  if (url.includes("nominatim.openstreetmap.org")) {
+    return throttleNominatim(() => doFetchWithTimeout(url, ms, init, retries));
+  }
+  return doFetchWithTimeout(url, ms, init, retries);
+}
+
+async function doFetchWithTimeout(url: string, ms = 15000, init: RequestInit = {}, retries = 1): Promise<Response> {
   const ctrl = new AbortController();
   const t = setTimeout(() => ctrl.abort(), ms);
   try {
     const res = await fetch(url, { ...init, signal: ctrl.signal, headers: { "User-Agent": UA, ...(init.headers || {}) }, cache: "no-store" });
-    if (res.status >= 500 && retries > 0) return fetchWithTimeout(url, ms, init, retries - 1);
+    if (res.status >= 500 && retries > 0) return doFetchWithTimeout(url, ms, init, retries - 1);
     if (!res.ok) throw new Error(`HTTP ${res.status} från ${new URL(url).host}`);
     return res;
   } catch (e) {
     // nätverksfel (inte timeout) – försök en gång till
     if (retries > 0 && !(e instanceof Error && e.name === "AbortError") && !(e instanceof Error && e.message.startsWith("HTTP"))) {
-      return fetchWithTimeout(url, ms, init, retries - 1);
+      return doFetchWithTimeout(url, ms, init, retries - 1);
     }
     if (e instanceof Error && e.name === "AbortError") throw new Error(`Timeout från ${new URL(url).host}`);
     throw e;
@@ -62,18 +141,18 @@ export function within<T>(p: Promise<T>, ms: number, msg: string): Promise<T> {
 }
 
 async function cachedJson<T>(url: string, ttlMs: number, timeoutMs = 15000): Promise<T> {
-  const hit = cache.get(url);
-  if (hit && Date.now() - hit.at < ttlMs) return hit.data as T;
+  const hit = memoryCache.get(url);
+  if (hit !== undefined) return hit as T;
   const data = (await (await fetchWithTimeout(url, timeoutMs)).json()) as T;
-  cache.set(url, { at: Date.now(), data });
+  memoryCache.set(url, data, ttlMs);
   return data;
 }
 
 async function cachedText(url: string, ttlMs: number): Promise<string> {
-  const hit = cache.get(url);
-  if (hit && Date.now() - hit.at < ttlMs) return hit.data as string;
+  const hit = memoryCache.get(url);
+  if (hit !== undefined) return hit as string;
   const data = await (await fetchWithTimeout(url, 30000)).text();
-  cache.set(url, { at: Date.now(), data });
+  memoryCache.set(url, data, ttlMs);
   return data;
 }
 
@@ -124,8 +203,13 @@ type Ed318Feature = {
   };
 };
 
-export async function uasZones(): Promise<FeatureCollection> {
-  const raw = await cachedJson<{ features: Ed318Feature[] }>("https://daim.lfv.se/echarts/dronechart/data/uas_zones_ED318.json", 6 * HOUR);
+let cachedUasZones: { at: number; data: FeatureCollection } | null = null;
+
+export async function uasZones(ttl = 6 * HOUR): Promise<FeatureCollection> {
+  if (cachedUasZones && Date.now() - cachedUasZones.at < ttl) {
+    return cachedUasZones.data;
+  }
+  const raw = await cachedJson<{ features: Ed318Feature[] }>("https://daim.lfv.se/echarts/dronechart/data/uas_zones_ED318.json", ttl);
   const features: Feature[] = [];
   for (const f of raw.features || []) {
     const g = f.geometry;
@@ -148,7 +232,9 @@ export async function uasZones(): Promise<FeatureCollection> {
     }
     if (geom) features.push({ type: "Feature", geometry: geom, properties: props });
   }
-  return { type: "FeatureCollection", features };
+  const result: FeatureCollection = { type: "FeatureCollection", features };
+  cachedUasZones = { at: Date.now(), data: result };
+  return result;
 }
 
 /* ---------- SMHI ---------- */
@@ -287,38 +373,61 @@ export async function natura2000(bbox: [number, number, number, number]) {
 
 /* ---------- Kp-index (NOAA SWPC 3-dygnsprognos) ---------- */
 
-export async function kpForecast(at: Date) {
+export async function kpForecast(from: Date, to?: Date) {
   const j = await cachedJson<{ time_tag: string; kp: number; observed: string }[] | (string | number)[][]>(
     "https://services.swpc.noaa.gov/products/noaa-planetary-k-index-forecast.json",
     HOUR
   );
   const rows = (Array.isArray(j[0]) ? (j as (string | number)[][]).slice(1).map((r) => ({ time_tag: String(r[0]), kp: Number(r[1]), observed: String(r[2]) })) : (j as { time_tag: string; kp: number; observed: string }[]));
-  const t = at.getTime();
-  let best: (typeof rows)[number] | null = null;
+  const tStart = from.getTime();
+  const tEnd = to ? to.getTime() : tStart + 3600e3;
+  let maxKp: (typeof rows)[number] | null = null;
   for (const r of rows) {
     const rt = new Date(r.time_tag.endsWith("Z") ? r.time_tag : r.time_tag.replace(" ", "T") + "Z").getTime();
-    if (rt <= t && t < rt + 3 * HOUR) best = r;
+    if (rt + 3 * HOUR > tStart && rt <= tEnd) {
+      if (!maxKp || r.kp > maxKp.kp) {
+        maxKp = r;
+      }
+    }
   }
-  return best ? { kp: best.kp, kind: best.observed } : null;
+  return maxKp ? { kp: maxKp.kp, kind: maxKp.observed } : null;
 }
 
 /* ---------- GPS-störning (GPSJam, ADS-B-baserad, H3 res 4) ---------- */
+
+type ParsedGpsJam = Map<string, { good: number; bad: number }>;
+const parsedGpsJamCache = new Map<string, { at: number; map: ParsedGpsJam }>();
 
 export async function gpsInterference(lat: number, lon: number) {
   const manifest = await cachedText("https://gpsjam.org/data/manifest.csv", 6 * HOUR);
   const dates = manifest.trim().split("\n").slice(1).map((l) => l.split(",")[0]).filter(Boolean).sort();
   const last = dates[dates.length - 1];
   if (!last) throw new Error("Tom manifest");
-  const csv = await cachedText(`https://gpsjam.org/data/${last}-h3_4.csv`, 12 * HOUR);
+
+  let parsed = parsedGpsJamCache.get(last)?.map;
+  if (!parsed) {
+    const csv = await cachedText(`https://gpsjam.org/data/${last}-h3_4.csv`, 12 * HOUR);
+    parsed = new Map<string, { good: number; bad: number }>();
+    for (const line of csv.split("\n")) {
+      const parts = line.split(",");
+      if (parts.length >= 3 && parts[0]) {
+        parsed.set(parts[0], { good: +parts[1] || 0, bad: +parts[2] || 0 });
+      }
+    }
+    parsedGpsJamCache.set(last, { at: Date.now(), map: parsed });
+  }
+
   const cell = latLngToCell(lat, lon, 4);
-  const near = new Set(gridDisk(cell, 1));
+  const near = gridDisk(cell, 1);
   let good = 0, bad = 0, ownPct: number | null = null;
-  for (const line of csv.split("\n")) {
-    const [hex, g, b] = line.split(",");
-    if (!near.has(hex)) continue;
-    good += +g;
-    bad += +b;
-    if (hex === cell) ownPct = (+b / Math.max(1, +g + +b)) * 100;
+  for (const hex of near) {
+    const stats = parsed.get(hex);
+    if (!stats) continue;
+    good += stats.good;
+    bad += stats.bad;
+    if (hex === cell) {
+      ownPct = (stats.bad / Math.max(1, stats.good + stats.bad)) * 100;
+    }
   }
   const pct = (bad / Math.max(1, good + bad)) * 100;
   const level = good + bad < 3 ? "okänd" : pct > 10 ? "hög" : pct >= 2 ? "medel" : "låg";
@@ -328,12 +437,14 @@ export async function gpsInterference(lat: number, lon: number) {
 /* ---------- Geokodning (OSM Nominatim) ---------- */
 
 export async function reverseGeocode(lat: number, lon: number): Promise<string> {
+  const rLat = lat.toFixed(3);
+  const rLon = lon.toFixed(3);
   const j = await cachedJson<{ address?: Record<string, string>; display_name?: string }>(
-    `https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lon}&zoom=12&accept-language=sv`,
+    `https://nominatim.openstreetmap.org/reverse?format=json&lat=${rLat}&lon=${rLon}&zoom=12&accept-language=sv`,
     24 * HOUR
   );
   const a = j.address || {};
-  return a.city || a.town || a.village || a.municipality || a.county || j.display_name?.split(",")[0] || `${lat.toFixed(3)}, ${lon.toFixed(3)}`;
+  return a.city || a.town || a.village || a.municipality || a.county || j.display_name?.split(",")[0] || `${rLat}, ${rLon}`;
 }
 
 export async function searchPlace(q: string) {

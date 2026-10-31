@@ -17,6 +17,7 @@ export const STATUS_LABEL: Record<string, { text: string; cls: string }> = {
   OK: { text: "OK", cls: "b-ok" },
   CAUTION: { text: "Försiktighet", cls: "b-warn" },
   PERMISSION: { text: "Tillstånd krävs", cls: "b-danger" },
+  INCOMPLETE: { text: "Ofullständig", cls: "b-danger" },
 };
 
 export const SEVERITY_LABEL: Record<string, { text: string; cls: string }> = {

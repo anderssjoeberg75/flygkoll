@@ -28,6 +28,17 @@ export default async function Dashboard() {
         <Link href="/briefings/new" className="btn">＋ Ny briefing</Link>
       </div>
 
+      {daysLeft !== null && daysLeft < 0 && (
+        <div className="banner" style={{ background: "var(--danger-bg, #fee2e2)", color: "var(--danger-fg, #991b1b)", padding: "12px 16px", borderRadius: "8px", marginBottom: "16px", border: "1px solid var(--danger-border, #f87171)" }}>
+          🛑 <strong>Ditt drönarkort har gått ut ({fmtDate(user.license_expiry!)})!</strong> Du måste förnya ditt drönarkort hos Transportstyrelsen innan du genomför flygningar i öppen kategori.
+        </div>
+      )}
+      {daysLeft !== null && daysLeft >= 0 && daysLeft <= 60 && (
+        <div className="banner" style={{ background: "var(--warn-bg, #fef3c7)", color: "var(--warn-fg, #92400e)", padding: "12px 16px", borderRadius: "8px", marginBottom: "16px", border: "1px solid var(--warn-border, #fcd34d)" }}>
+          ⚠️ <strong>Ditt drönarkort går ut snart!</strong> Det är {daysLeft} dagar kvar till utgångsdatumet ({fmtDate(user.license_expiry!)}). Kom ihåg att förnya i tid.
+        </div>
+      )}
+
       <div className="grid g3">
         <div className="card stat"><span className="label">Briefingar</span><span className="value">{nBrief}</span></div>
         <div className="card stat"><span className="label">Flygtid</span><span className="value">{fmtMinutes(fl.m)}</span></div>

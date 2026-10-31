@@ -32,6 +32,8 @@ CREATE TABLE IF NOT EXISTS users (
   license_number TEXT,
   license_expiry TEXT,
   license_classes TEXT NOT NULL DEFAULT '[]',
+  disabled_at TEXT,
+  must_change_password INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -67,7 +69,7 @@ CREATE TABLE IF NOT EXISTS zones (
 CREATE TABLE IF NOT EXISTS briefings (
   id TEXT PRIMARY KEY,
   org_id TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
-  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
   name TEXT NOT NULL,
   lat REAL NOT NULL,
   lon REAL NOT NULL,
@@ -84,7 +86,7 @@ CREATE TABLE IF NOT EXISTS briefings (
 CREATE TABLE IF NOT EXISTS flights (
   id TEXT PRIMARY KEY,
   org_id TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
-  pilot_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  pilot_id TEXT REFERENCES users(id) ON DELETE SET NULL,
   drone_id TEXT REFERENCES drones(id) ON DELETE SET NULL,
   briefing_id TEXT,
   type TEXT NOT NULL DEFAULT 'standard', -- standard|instruction|simulator
@@ -150,13 +152,81 @@ CREATE TABLE IF NOT EXISTS checklists (
 CREATE TABLE IF NOT EXISTS checklist_runs (
   id TEXT PRIMARY KEY,
   checklist_id TEXT NOT NULL REFERENCES checklists(id) ON DELETE CASCADE,
-  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
   drone_id TEXT,
+  briefing_id TEXT,
+  flight_id TEXT,
   checked TEXT NOT NULL,
   completed INTEGER NOT NULL,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+CREATE INDEX IF NOT EXISTS idx_flights_org_started ON flights(org_id, started_at);
+CREATE INDEX IF NOT EXISTS idx_flights_drone ON flights(drone_id);
+CREATE INDEX IF NOT EXISTS idx_flights_pilot ON flights(pilot_id);
+CREATE INDEX IF NOT EXISTS idx_flights_briefing ON flights(briefing_id);
+CREATE INDEX IF NOT EXISTS idx_briefings_org_created ON briefings(org_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
+CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at);
+CREATE INDEX IF NOT EXISTS idx_maint_sched_drone ON maint_schedules(drone_id);
+CREATE INDEX IF NOT EXISTS idx_maint_logs_drone_done ON maint_logs(drone_id, done_at);
+CREATE INDEX IF NOT EXISTS idx_checklist_runs_user ON checklist_runs(user_id);
+CREATE INDEX IF NOT EXISTS idx_checklist_runs_checklist ON checklist_runs(checklist_id);
 `;
+
+function runMigrations(database: Database.Database) {
+  const currentVersion = (database.pragma("user_version", { simple: true }) as number) ?? 0;
+  const migrations: { version: number; run: (db: Database.Database) => void }[] = [
+    {
+      version: 1,
+      run: (db) => {
+        // Users table columns
+        const userCols = db.prepare("PRAGMA table_info(users)").all() as { name: string }[];
+        const userColNames = new Set(userCols.map((c) => c.name));
+        if (!userColNames.has("disabled_at")) {
+          db.exec("ALTER TABLE users ADD COLUMN disabled_at TEXT;");
+        }
+        if (!userColNames.has("must_change_password")) {
+          db.exec("ALTER TABLE users ADD COLUMN must_change_password INTEGER NOT NULL DEFAULT 0;");
+        }
+
+        // Checklist runs columns (#18)
+        const runCols = db.prepare("PRAGMA table_info(checklist_runs)").all() as { name: string }[];
+        const runColNames = new Set(runCols.map((c) => c.name));
+        if (!runColNames.has("briefing_id")) {
+          db.exec("ALTER TABLE checklist_runs ADD COLUMN briefing_id TEXT;");
+        }
+        if (!runColNames.has("flight_id")) {
+          db.exec("ALTER TABLE checklist_runs ADD COLUMN flight_id TEXT;");
+        }
+
+        // Indexes (#8, #12)
+        db.exec(`
+          CREATE INDEX IF NOT EXISTS idx_flights_org_started ON flights(org_id, started_at);
+          CREATE INDEX IF NOT EXISTS idx_flights_drone ON flights(drone_id);
+          CREATE INDEX IF NOT EXISTS idx_flights_pilot ON flights(pilot_id);
+          CREATE INDEX IF NOT EXISTS idx_flights_briefing ON flights(briefing_id);
+          CREATE INDEX IF NOT EXISTS idx_briefings_org_created ON briefings(org_id, created_at);
+          CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
+          CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at);
+          CREATE INDEX IF NOT EXISTS idx_maint_sched_drone ON maint_schedules(drone_id);
+          CREATE INDEX IF NOT EXISTS idx_maint_logs_drone_done ON maint_logs(drone_id, done_at);
+          CREATE INDEX IF NOT EXISTS idx_checklist_runs_user ON checklist_runs(user_id);
+          CREATE INDEX IF NOT EXISTS idx_checklist_runs_checklist ON checklist_runs(checklist_id);
+        `);
+      },
+    },
+  ];
+
+  for (const m of migrations) {
+    if (m.version > currentVersion) {
+      database.transaction(() => {
+        m.run(database);
+        database.pragma(`user_version = ${m.version}`);
+      })();
+    }
+  }
+}
 
 declare global {
   // eslint-disable-next-line no-var
@@ -165,9 +235,10 @@ declare global {
 
 function open(): Database.Database {
   fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
-  const db = new Database(DB_PATH);
-  db.exec(SCHEMA);
-  return db;
+  const database = new Database(DB_PATH);
+  database.exec(SCHEMA);
+  runMigrations(database);
+  return database;
 }
 
 export const db: Database.Database = globalThis.__flygkollDb ?? (globalThis.__flygkollDb = open());

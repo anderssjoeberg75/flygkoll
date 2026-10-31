@@ -4,8 +4,14 @@ import { db } from "@/lib/db";
 
 const KIND: Record<string, string> = { preflight: "Före flygning", postflight: "Efter flygning", daily: "Daglig kontroll", custom: "Övrigt" };
 
-export default async function Checklists() {
+export default async function Checklists({
+  searchParams,
+}: {
+  searchParams?: Promise<{ briefing?: string; drone?: string }>;
+}) {
   const user = await requireUser();
+  const sp = searchParams ? await searchParams : undefined;
+  const query = sp?.briefing ? `?briefing=${sp.briefing}${sp.drone ? `&drone=${sp.drone}` : ""}` : "";
   const lists = db
     .prepare("SELECT c.id, c.name, c.kind, c.items, d.name AS drone_name FROM checklists c LEFT JOIN drones d ON d.id = c.drone_id WHERE c.org_id = ? ORDER BY c.kind, c.name")
     .all(user.org_id) as { id: string; name: string; kind: string; items: string; drone_name: string | null }[];
@@ -13,7 +19,12 @@ export default async function Checklists() {
   return (
     <>
       <div className="page-head">
-        <div><h1>Checklistor</h1><p className="muted" style={{ margin: 0 }}>Bocka av punkterna direkt i mobilen. Organisationen kan anpassa listorna och göra drönarspecifika varianter.</p></div>
+        <div>
+          <h1>Checklistor</h1>
+          <p className="muted" style={{ margin: 0 }}>
+            {sp?.briefing ? "Kopplad till briefing – välj checklista att genomföra." : "Bocka av punkterna direkt i mobilen. Organisationen kan anpassa listorna och göra drönarspecifika varianter."}
+          </p>
+        </div>
         {user.role === "admin" && <Link className="btn" href="/checklists/new">＋ Ny checklista</Link>}
       </div>
       {groups.map((g) => (
@@ -21,7 +32,7 @@ export default async function Checklists() {
           <h2>{KIND[g.k]}</h2>
           <div className="grid g3">
             {g.items.map((c) => (
-              <Link key={c.id} href={`/checklists/${c.id}`} className="card" style={{ color: "inherit", padding: 14 }}>
+              <Link key={c.id} href={`/checklists/${c.id}${query}`} className="card" style={{ color: "inherit", padding: 14 }}>
                 <strong>{c.name}</strong>
                 <div className="small muted">{(JSON.parse(c.items) as string[]).length} punkter{c.drone_name ? ` · ${c.drone_name}` : ""}</div>
               </Link>

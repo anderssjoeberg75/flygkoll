@@ -2,9 +2,10 @@
 
 import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
-import { requireUser } from "@/lib/auth";
+import { requireUser, requireWriter } from "@/lib/auth";
 import { db, newId } from "@/lib/db";
 import { droneHours, getDrone } from "@/lib/fleet";
+import { parseLocalStockholm } from "@/lib/format";
 
 function droneVals(fd: FormData) {
   return {
@@ -19,7 +20,7 @@ function droneVals(fd: FormData) {
 }
 
 export async function addDrone(fd: FormData) {
-  const user = await requireUser();
+  const user = await requireWriter();
   const v = droneVals(fd);
   const id = newId();
   db.prepare("INSERT INTO drones (id, org_id, name, model, serial, mtom_g, class_mark, char_dim_m, notes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)").run(
@@ -30,7 +31,7 @@ export async function addDrone(fd: FormData) {
 }
 
 export async function updateDrone(id: string, fd: FormData) {
-  const user = await requireUser();
+  const user = await requireWriter();
   const v = droneVals(fd);
   db.prepare("UPDATE drones SET name=?, model=?, serial=?, mtom_g=?, class_mark=?, char_dim_m=?, notes=? WHERE id=? AND org_id=?").run(
     v.name, v.model, v.serial, v.mtom_g, v.class_mark, v.char_dim_m, v.notes, id, user.org_id
@@ -39,14 +40,14 @@ export async function updateDrone(id: string, fd: FormData) {
 }
 
 export async function archiveDrone(id: string) {
-  const user = await requireUser();
+  const user = await requireWriter();
   db.prepare("UPDATE drones SET archived = 1 - archived WHERE id = ? AND org_id = ?").run(id, user.org_id);
   revalidatePath("/fleet");
   redirect("/fleet");
 }
 
 export async function addSchedule(droneId: string, fd: FormData) {
-  const user = await requireUser();
+  const user = await requireWriter();
   if (!getDrone(user.org_id, droneId)) return;
   const days = Number(fd.get("interval_days")) || null;
   const hours = Number(fd.get("interval_hours")) || null;
@@ -58,7 +59,7 @@ export async function addSchedule(droneId: string, fd: FormData) {
 }
 
 export async function removeSchedule(droneId: string, scheduleId: string) {
-  const user = await requireUser();
+  const user = await requireWriter();
   if (!getDrone(user.org_id, droneId)) return;
   // schemat tas bort men utfört arbete finns kvar i historiken
   db.prepare("DELETE FROM maint_schedules WHERE id = ? AND drone_id = ?").run(scheduleId, droneId);
@@ -66,11 +67,12 @@ export async function removeSchedule(droneId: string, scheduleId: string) {
 }
 
 export async function logMaintenance(droneId: string, fd: FormData) {
-  const user = await requireUser();
+  const user = await requireWriter();
   if (!getDrone(user.org_id, droneId)) return;
   const scheduleId = String(fd.get("schedule_id") || "") || null;
   const wt = String(fd.get("work_type_free") || "").trim() || String(fd.get("work_type") || "").trim() || "Service";
-  const done = fd.get("done_at") ? new Date(String(fd.get("done_at"))) : new Date();
+  const rawDone = fd.get("done_at") ? String(fd.get("done_at")) : "";
+  const done = rawDone ? parseLocalStockholm(rawDone.includes("T") ? rawDone : `${rawDone}T12:00`) : new Date();
   db.prepare("INSERT INTO maint_logs (id, drone_id, schedule_id, user_id, work_type, done_at, notes) VALUES (?, ?, ?, ?, ?, ?, ?)").run(
     newId(), droneId, scheduleId, user.id, wt, done.toISOString(), String(fd.get("notes") || "")
   );
@@ -81,14 +83,14 @@ export async function logMaintenance(droneId: string, fd: FormData) {
 }
 
 export async function addWorkType(fd: FormData) {
-  const user = await requireUser();
+  const user = await requireWriter();
   const name = String(fd.get("name") || "").trim();
   if (name) db.prepare("INSERT INTO work_types (id, org_id, name) VALUES (?, ?, ?)").run(newId(), user.org_id, name);
   revalidatePath("/fleet");
 }
 
 export async function removeWorkType(id: string) {
-  const user = await requireUser();
+  const user = await requireWriter();
   db.prepare("DELETE FROM work_types WHERE id = ? AND org_id = ?").run(id, user.org_id);
   revalidatePath("/fleet");
 }

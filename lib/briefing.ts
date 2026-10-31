@@ -18,6 +18,7 @@ import {
   type SmhiPoint,
 } from "./sources";
 import { droneRules, type DroneLike } from "./rules";
+import { fmtTime } from "./format";
 
 export type Severity = "permission" | "caution" | "info";
 export type AreaHit = {
@@ -41,7 +42,7 @@ export type BriefingResult = {
   from: string;
   to: string;
   generatedAt: string;
-  status: "OK" | "CAUTION" | "PERMISSION";
+  status: "OK" | "CAUTION" | "PERMISSION" | "INCOMPLETE";
   maxHeight: { m: number; reason: string };
   hits: AreaHit[];
   notams: { id: string; text: string; from: string; to: string; location: string; distanceKm: number | null; isArea: boolean }[];
@@ -97,7 +98,7 @@ function str(v: unknown) {
 }
 
 /** Höjd i fot från LFV-sträng ("GND", "1500", "FL95") */
-function lowerFt(v: unknown): number {
+export function lowerFt(v: unknown): number {
   const s = str(v).toUpperCase().trim();
   if (!s || s === "GND" || s === "SFC") return 0;
   if (s.startsWith("FL")) return Number(s.slice(2)) * 100;
@@ -201,7 +202,7 @@ export async function buildBriefing(opts: {
     settle(sources, "wind", "Vindprofil (Open-Meteo)", "Övrigt", () => windProfile(lat, lon)),
     settle(sources, "nr", "Naturvårdsregistret", "Övrigt", () => within(protectedAreas(viewBbox), 12000, "Stort område – laddas i bakgrunden. Uppdatera briefingen om en minut.")),
     settle(sources, "n2k", "Natura 2000", "Övrigt", () => within(natura2000(viewBbox), 12000, "Stort område – laddas i bakgrunden. Uppdatera briefingen om en minut.")),
-    settle(sources, "kp", "Kp-index (NOAA SWPC)", "Övrigt", () => kpForecast(from)),
+    settle(sources, "kp", "Kp-index (NOAA SWPC)", "Övrigt", () => kpForecast(from, to)),
     settle(sources, "gnss", "GPS-störning (GPSJam)", "Övrigt", () => gpsInterference(lat, lon)),
     reverseGeocode(lat, lon).catch(() => `${lat.toFixed(4)}, ${lon.toFixed(4)}`),
   ]);
@@ -371,7 +372,12 @@ export async function buildBriefing(opts: {
   const sevRank: Record<Severity, number> = { permission: 2, caution: 1, info: 0 };
   hits.sort((a, b) => sevRank[b.severity] - sevRank[a.severity]);
   const worst = hits.reduce((m, h) => Math.max(m, sevRank[h.severity]), 0);
-  const status: BriefingResult["status"] = worst === 2 ? "PERMISSION" : worst === 1 ? "CAUTION" : "OK";
+  let status: BriefingResult["status"] = worst === 2 ? "PERMISSION" : worst === 1 ? "CAUTION" : "OK";
+
+  const failedLfv = sources.filter((s) => s.group === "LFV" && !s.ok);
+  if (failedLfv.length > 0) {
+    status = status === "PERMISSION" ? "PERMISSION" : "INCOMPLETE";
+  }
 
   let maxHeight = { m: 120, reason: "Öppen kategori" };
   if (hits.some((h) => ["CTR", "TIZ", "ATZ"].includes(h.layer))) maxHeight = { m: 50, reason: "Inom kontrollerat luftrum/TIZ utan tillstånd" };
@@ -393,6 +399,18 @@ export async function buildBriefing(opts: {
     return t >= from.getTime() - 3600e3 && t <= to.getTime() + 3600e3;
   });
 
+  // Väderevaluering över hela flygfönstret [from, to]
+  const windowHours = hoursAll.filter((h) => {
+    const t = new Date(h.time).getTime();
+    return t >= from.getTime() && t <= to.getTime();
+  });
+  const checkRows = windowHours.length > 0 ? windowHours : atStart ? [atStart] : [];
+
+  const maxThunderRow = checkRows.reduce<WeatherRow | null>((m, r) => (!m || (r.thunder ?? 0) > (m.thunder ?? 0) ? r : m), null);
+  const minVisRow = checkRows.reduce<WeatherRow | null>((m, r) => (!m || (r.vis !== null && (m.vis === null || r.vis < m.vis)) ? r : m), null);
+  const minTempRow = checkRows.reduce<WeatherRow | null>((m, r) => (!m || r.temp < m.temp ? r : m), null);
+  const smhiMaxGust = Math.max(0, ...checkRows.map((r) => r.gust ?? r.wind ?? 0));
+
   const day = new Date(from);
   const sc = SunCalc.getTimes(day, lat, lon);
   const safe = (d: Date | null | undefined) => (d && !isNaN(d.getTime()) ? d.toISOString() : null);
@@ -400,16 +418,34 @@ export async function buildBriefing(opts: {
   const sunUpAt = (d: Date) => SunCalc.getPosition(d, lat, lon).altitude > -0.833 * (Math.PI / 180);
 
   const notices: BriefingResult["notices"] = [];
+  if (failedLfv.length > 0) {
+    notices.push({
+      level: "danger",
+      title: "Ofullständigt luftrumsunderlag (LFV-fel)",
+      text: `Kunde inte hämta data från ${failedLfv.map((s) => s.label).join(", ")}. Luftrumsrestriktioner kan föreligga som inte syns i briefingen. Kontrollera alltid Drönarkartan/AROWeb manuellt!`,
+    });
+  }
+
   const windNow = wp[0]?.w10 ?? atStart?.wind ?? null;
-  const windMax = Math.max(...wp.map((w) => Math.max(w.w120, w.gust)), atStart?.gust ?? 0);
+  const windMax = Math.max(
+    ...wp.map((w) => Math.max(w.w120, w.gust)),
+    atStart?.gust ?? 0,
+    smhiMaxGust
+  );
   if (windNow === null) notices.push({ level: "info", title: "Vinddata saknas", text: "Prognos saknas för vald tid. Skapa briefingen närmare flygtillfället." });
-  else if (windMax >= opts.windRed) notices.push({ level: "danger", title: "Hård vind", text: `Vind/byar upp till ${windMax.toFixed(1)} m/s i flygfönstret överstiger röd gräns (${opts.windRed} m/s).` });
-  else if (windMax >= opts.windYellow) notices.push({ level: "warn", title: "Byig vind", text: `Vind/byar upp till ${windMax.toFixed(1)} m/s – över gul gräns (${opts.windYellow} m/s).` });
+  else if (windMax >= opts.windRed) notices.push({ level: "danger", title: "Hård vind i flygfönstret", text: `Vind/byar upp till ${windMax.toFixed(1)} m/s i flygfönstret överstiger röd gräns (${opts.windRed} m/s).` });
+  else if (windMax >= opts.windYellow) notices.push({ level: "warn", title: "Byig vind i flygfönstret", text: `Vind/byar upp till ${windMax.toFixed(1)} m/s – över gul gräns (${opts.windYellow} m/s).` });
   if (!sunUpAt(from) || !sunUpAt(to)) notices.push({ level: "warn", title: "Mörkerflygning", text: "Delar av flygfönstret ligger utanför dagsljus. Grönt blinkande ljus krävs på drönaren i öppen kategori." });
-  if (atStart && atStart.vis !== null && atStart.vis < 3) notices.push({ level: "warn", title: "Nedsatt sikt", text: `Prognostiserad sikt ${atStart.vis} km. Säkerställ VLOS.` });
-  if (atStart && (atStart.thunder ?? 0) >= 20) notices.push({ level: "danger", title: "Åskrisk", text: `Åsksannolikhet ${atStart.thunder} %.` });
-  if (atStart && atStart.temp <= 0) notices.push({ level: "warn", title: "Kyla", text: "Minusgrader: förvärm batterierna och räkna med kortare flygtid. Se upp för isbildning." });
-  if (kp && kp.kp >= 5) notices.push({ level: "warn", title: `Geomagnetisk storm (Kp ${kp.kp})`, text: "Försämrad GNSS-noggrannhet möjlig. Var beredd att flyga i ATTI/manuellt." });
+  if (minVisRow && minVisRow.vis !== null && minVisRow.vis < 3) {
+    notices.push({ level: "warn", title: "Nedsatt sikt i flygfönstret", text: `Prognostiserad sikt ner till ${minVisRow.vis} km (${fmtTime(minVisRow.time)}). Säkerställ VLOS under hela flygningen.` });
+  }
+  if (maxThunderRow && (maxThunderRow.thunder ?? 0) >= 20) {
+    notices.push({ level: "danger", title: "Åskrisk i flygfönstret", text: `Åsksannolikhet upp till ${maxThunderRow.thunder} % (${fmtTime(maxThunderRow.time)}).` });
+  }
+  if (minTempRow && minTempRow.temp <= 0) {
+    notices.push({ level: "warn", title: "Kyla i flygfönstret", text: `Temperatur ner till ${minTempRow.temp.toFixed(0)} °C (${fmtTime(minTempRow.time)}). Förvärm batterierna och räkna med kortare flygtid. Se upp för isbildning.` });
+  }
+  if (kp && kp.kp >= 5) notices.push({ level: "warn", title: `Geomagnetisk storm (Kp ${kp.kp})`, text: "Försämrad GNSS-noggrannhet möjlig under flygfönstret. Var beredd att flyga i ATTI/manuellt." });
   if (gnss && (gnss.level === "hög" || gnss.level === "medel")) notices.push({ level: gnss.level === "hög" ? "danger" : "warn", title: "GPS-störning rapporterad", text: `${gnss.pct} % av flygplanen i området rapporterade dålig GNSS-kvalitet (${gnss.date}).` });
   if (notamList.some((n) => n.isArea)) notices.push({ level: "warn", title: "NOTAM-områden i närheten", text: "Det finns aktiva NOTAM-områden nära operationsområdet. Läs dem nedan." });
   notices.push({ level: "info", title: "Skyddsobjekt ingår inte", text: "Kontrollera alltid om det finns skyddsobjekt (t.ex. militära anläggningar) i området – drönarflygning där kräver tillstånd." });

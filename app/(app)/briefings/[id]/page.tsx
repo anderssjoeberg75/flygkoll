@@ -16,7 +16,7 @@ export default async function BriefingPage({ params }: { params: Promise<{ id: s
   const user = await requireUser();
   const row = db
     .prepare("SELECT * FROM briefings WHERE id = ? AND org_id = ? AND (user_id = ? OR shared = 1)")
-    .get(id, user.org_id, user.id) as { id: string; name: string; user_id: string; shared: number; result: string; created_at: string } | undefined;
+    .get(id, user.org_id, user.id) as { id: string; name: string; user_id: string; drone_id: string | null; shared: number; result: string; created_at: string } | undefined;
   if (!row) notFound();
   const r = JSON.parse(row.result) as BriefingResult;
   const st = STATUS_LABEL[r.status];
@@ -29,6 +29,7 @@ export default async function BriefingPage({ params }: { params: Promise<{ id: s
   const lfvSources = r.sources.filter((s) => s.group === "LFV");
   const otherSources = r.sources.filter((s) => s.group !== "LFV");
   const isOwner = row.user_id === user.id;
+  const backgroundPending = r.sources.some((s) => (s.key === "nr" || s.key === "n2k") && !s.ok && s.error?.includes("bakgrunden"));
 
   return (
     <>
@@ -41,13 +42,31 @@ export default async function BriefingPage({ params }: { params: Promise<{ id: s
             <span className="muted">Giltig {fmtDateTime(r.from)} – {fmtTime(r.to)} · radie {r.radius_m} m · {r.center[1].toFixed(5)}, {r.center[0].toFixed(5)}</span>
           </div>
         </div>
-        <div className="row no-print">
+        <div className="row no-print" style={{ flexWrap: "wrap" }}>
+          <Link href={`/checklists?briefing=${row.id}&drone=${row.drone_id || ""}`} className="btn secondary small">✓ Kör checklista</Link>
+          <Link href={`/logbook/new?briefing=${row.id}`} className="btn small">✈ Logga flygning</Link>
           <a className="btn secondary small" href={`/api/briefings/${row.id}/kml`}>Exportera KML</a>
           <PrintButton />
           <form action={rerunBriefing.bind(null, row.id, true)}><button className="btn secondary small">Uppdatera</button></form>
-          <form action={rerunBriefing.bind(null, row.id, false)}><button className="btn small">Ny briefing nu</button></form>
+          <form action={rerunBriefing.bind(null, row.id, false)}><button className="btn secondary small">Ny briefing nu</button></form>
         </div>
       </div>
+
+      {backgroundPending && (
+        <div className="banner" style={{ background: "var(--info-bg, #eff6ff)", color: "var(--info-fg, #1e40af)", padding: "12px 16px", borderRadius: "8px", marginBottom: "16px", border: "1px solid var(--info-border, #93c5fd)", display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
+          <span>ℹ️ <strong>Naturvårdsdata hämtas i bakgrunden</strong> (Naturvårdsregistret / Natura 2000). När hämtningen är klar kan du uppdatera briefingen för att inkludera områdena.</span>
+          <form action={rerunBriefing.bind(null, row.id, true)} style={{ margin: 0 }}>
+            <button className="btn small">Uppdatera data nu</button>
+          </form>
+        </div>
+      )}
+
+      {r.status === "INCOMPLETE" && (
+        <div className="notice n-danger" style={{ marginBottom: 16 }}>
+          <strong>⚠️ Ofullständigt luftrumsunderlag</strong>
+          En eller flera officiella LFV-källor svarade inte ({lfvSources.filter((s) => !s.ok).map((s) => s.label).join(", ") || "LFV"}). Flygförbud eller restriktioner kan föreligga som inte syns i briefingen. Kontrollera alltid AROWeb eller Drönarkartan manuellt innan flygning!
+        </div>
+      )}
 
       <div className="grid g4">
         <div className={`card stat ${r.status === "OK" ? "ok" : r.status === "CAUTION" ? "warn" : "danger"}`}>

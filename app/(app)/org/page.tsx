@@ -84,28 +84,44 @@ export default async function Org() {
         <h2>Medlemmar</h2>
         <div className="table-wrap">
           <table>
-            <thead><tr><th>Namn</th><th>E-post</th><th>Roll</th>{isAdmin && <th></th>}</tr></thead>
+            <thead><tr><th>Namn</th><th>E-post</th><th>Roll</th><th>Drönarkort</th>{isAdmin && <th></th>}</tr></thead>
             <tbody>
-              {members.map((m) => (
-                <tr key={m.id}>
-                  <td className="row">
-                    {m.photo ? <img src={m.photo} alt="" width={28} height={28} style={{ borderRadius: "50%", objectFit: "cover" }} /> : null}
-                    {m.name}
-                  </td>
-                  <td>{m.email}</td>
-                  <td>
-                    {isAdmin && m.id !== user.id ? (
-                      <form action={setRole.bind(null, m.id)} className="row">
-                        <select name="role" defaultValue={m.role} style={{ width: "auto" }}>
-                          {Object.entries(ROLE).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
-                        </select>
-                        <button className="btn secondary small">Spara</button>
-                      </form>
-                    ) : ROLE[m.role]}
-                  </td>
-                  {isAdmin && <td>{m.id !== user.id && <form action={removeMember.bind(null, m.id)}><button className="btn danger small">Ta bort</button></form>}</td>}
-                </tr>
-              ))}
+              {members.map((m) => {
+                const daysLeft = m.license_expiry ? Math.round((new Date(m.license_expiry).getTime() - Date.now()) / 864e5) : null;
+                const licClasses: string[] = JSON.parse(m.license_classes || "[]");
+                return (
+                  <tr key={m.id}>
+                    <td className="row">
+                      {m.photo ? <img src={m.photo} alt="" width={28} height={28} style={{ borderRadius: "50%", objectFit: "cover" }} /> : null}
+                      {m.name}
+                    </td>
+                    <td>{m.email}</td>
+                    <td>
+                      {isAdmin && m.id !== user.id ? (
+                        <form action={setRole.bind(null, m.id)} className="row">
+                          <select name="role" defaultValue={m.role} style={{ width: "auto" }}>
+                            {Object.entries(ROLE).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+                          </select>
+                          <button className="btn secondary small">Spara</button>
+                        </form>
+                      ) : ROLE[m.role]}
+                    </td>
+                    <td>
+                      {m.license_expiry ? (
+                        <div>
+                          <span className={`badge ${daysLeft !== null && daysLeft < 0 ? "b-danger" : daysLeft !== null && daysLeft <= 60 ? "b-warn" : "b-ok"}`}>
+                            {daysLeft !== null && daysLeft < 0 ? "Utgånget" : `${daysLeft} d`} ({m.license_expiry})
+                          </span>
+                          {licClasses.length > 0 && <span className="small muted"> {licClasses.join(", ")}</span>}
+                        </div>
+                      ) : (
+                        <span className="muted small">Ej angivet</span>
+                      )}
+                    </td>
+                    {isAdmin && <td>{m.id !== user.id && <form action={removeMember.bind(null, m.id)}><button className="btn danger small">Ta bort</button></form>}</td>}
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>

@@ -4,7 +4,7 @@ import { requireUser, displayName } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { getDrone, droneHours, scheduleStatus, type Schedule } from "@/lib/fleet";
 import { droneRules } from "@/lib/rules";
-import { fmtDate, fmtDateTime, fmtMinutes } from "@/lib/format";
+import { fmtDate, fmtDateTime, fmtMinutes, toLocalInput } from "@/lib/format";
 import { DroneFields } from "@/components/DroneFields";
 import { updateDrone, archiveDrone, addSchedule, removeSchedule, logMaintenance } from "../actions";
 
@@ -86,7 +86,7 @@ export default async function DronePage({ params, searchParams }: { params: Prom
                 <label>Uppfyller schema</label>
                 <select name="schedule_id"><option value="">– Inget –</option>{schedules.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}</select>
               </div>
-              <div><label>Datum</label><input type="date" name="done_at" defaultValue={new Date().toISOString().slice(0, 10)} /></div>
+              <div><label>Datum</label><input type="date" name="done_at" defaultValue={toLocalInput(new Date()).slice(0, 10)} /></div>
             </div>
             <div><label>Anteckning</label><input name="notes" /></div>
             <div><button className="btn">Spara</button></div>

@@ -39,14 +39,38 @@ export function scheduleStatus(s: Schedule, hoursNow: number, now = new Date()) 
 }
 
 export function dueMaintenance(orgId: string) {
+  const drones = listDrones(orgId);
+  if (drones.length === 0) return [];
+  const droneMap = new Map(drones.map((d) => [d.id, d]));
+
+  // Batch 1: Sum flight hours for all drones in org
+  const hoursRows = db
+    .prepare(
+      `SELECT drone_id, COALESCE(SUM(duration_min), 0) AS m 
+       FROM flights 
+       WHERE org_id = ? AND type != 'simulator' AND drone_id IS NOT NULL 
+       GROUP BY drone_id`
+    )
+    .all(orgId) as { drone_id: string; m: number }[];
+  const hoursMap = new Map(hoursRows.map((r) => [r.drone_id, r.m / 60]));
+
+  // Batch 2: All active schedules for all non-archived drones in org
+  const schedules = db
+    .prepare(
+      `SELECT s.* 
+       FROM maint_schedules s
+       JOIN drones d ON d.id = s.drone_id
+       WHERE d.org_id = ? AND d.archived = 0 AND s.active = 1`
+    )
+    .all(orgId) as Schedule[];
+
   const out: { drone: Drone; schedule: Schedule; status: ReturnType<typeof scheduleStatus> }[] = [];
-  for (const d of listDrones(orgId)) {
-    const h = droneHours(d.id);
-    const ss = db.prepare("SELECT * FROM maint_schedules WHERE drone_id = ? AND active = 1").all(d.id) as Schedule[];
-    for (const s of ss) {
-      const st = scheduleStatus(s, h);
-      if (st.overdue || st.soon) out.push({ drone: d, schedule: s, status: st });
-    }
+  for (const s of schedules) {
+    const drone = droneMap.get(s.drone_id);
+    if (!drone) continue;
+    const h = hoursMap.get(s.drone_id) ?? 0;
+    const st = scheduleStatus(s, h);
+    if (st.overdue || st.soon) out.push({ drone, schedule: s, status: st });
   }
   return out;
 }

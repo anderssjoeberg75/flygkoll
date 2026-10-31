@@ -2,7 +2,7 @@
 
 import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
-import { requireUser, displayName } from "@/lib/auth";
+import { requireWriter, displayName } from "@/lib/auth";
 import { db, newId } from "@/lib/db";
 import { parseLocalStockholm } from "@/lib/format";
 import { reverseGeocode } from "@/lib/sources";
@@ -29,12 +29,40 @@ function saveCrew(flightId: string, orgId: string, crew: CrewIn[]) {
 }
 
 export async function saveFlight(fd: FormData) {
-  const user = await requireUser();
-  const id = String(fd.get("id") || "") || newId();
-  const existing = db.prepare("SELECT id FROM flights WHERE id = ? AND org_id = ?").get(id, user.org_id);
+  const user = await requireWriter();
+  const rawId = String(fd.get("id") || "").trim();
+
+  // Kontrollera om flygningen redan finns och tillhör organisationen (#7)
+  const existing = rawId
+    ? (db.prepare("SELECT id, pilot_id FROM flights WHERE id = ? AND org_id = ?").get(rawId, user.org_id) as
+        | { id: string; pilot_id: string }
+        | undefined)
+    : undefined;
+
+  // Endast piloten själv eller admin får redigera (#7)
+  if (existing && existing.pilot_id !== user.id && user.role !== "admin") {
+    redirect("/logbook");
+  }
+
+  // Om flygningen inte finns: generera ALLTID ett nytt id för att undvika PK-kollisioner (#7)
+  const id = existing ? existing.id : newId();
   const started = parseLocalStockholm(String(fd.get("started_at")));
   const duration = Math.max(0, Number(fd.get("duration_min")) || 0);
-  const droneId = String(fd.get("drone_id") || "") || null;
+
+  // Validera att drönaren tillhör organisationen (#7)
+  let droneId = String(fd.get("drone_id") || "").trim() || null;
+  if (droneId) {
+    const valid = db.prepare("SELECT id FROM drones WHERE id = ? AND org_id = ?").get(droneId, user.org_id);
+    if (!valid) droneId = null;
+  }
+
+  // Validera att briefingen tillhör organisationen (#7)
+  let briefingId = String(fd.get("briefing_id") || "").trim() || null;
+  if (briefingId) {
+    const valid = db.prepare("SELECT id FROM briefings WHERE id = ? AND org_id = ?").get(briefingId, user.org_id);
+    if (!valid) briefingId = null;
+  }
+
   const vals = {
     type: String(fd.get("type") || "standard"),
     location: String(fd.get("location") || ""),
@@ -42,19 +70,20 @@ export async function saveFlight(fd: FormData) {
     lon: fd.get("lon") ? Number(fd.get("lon")) : null,
     max_alt_m: fd.get("max_alt_m") ? Number(fd.get("max_alt_m")) : null,
     notes: String(fd.get("notes") || ""),
-    briefing_id: String(fd.get("briefing_id") || "") || null,
   };
+
   if (existing) {
     db.prepare(
-      "UPDATE flights SET drone_id=?, type=?, started_at=?, duration_min=?, location=?, lat=?, lon=?, max_alt_m=?, notes=? WHERE id=? AND org_id=?"
-    ).run(droneId, vals.type, started.toISOString(), duration, vals.location, vals.lat, vals.lon, vals.max_alt_m, vals.notes, id, user.org_id);
+      "UPDATE flights SET drone_id=?, briefing_id=?, type=?, started_at=?, duration_min=?, location=?, lat=?, lon=?, max_alt_m=?, notes=? WHERE id=? AND org_id=?"
+    ).run(droneId, briefingId, vals.type, started.toISOString(), duration, vals.location, vals.lat, vals.lon, vals.max_alt_m, vals.notes, id, user.org_id);
     db.prepare("DELETE FROM flight_crew WHERE flight_id = ?").run(id);
   } else {
     db.prepare(
       `INSERT INTO flights (id, org_id, pilot_id, drone_id, briefing_id, type, started_at, duration_min, location, lat, lon, max_alt_m, notes)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-    ).run(id, user.org_id, user.id, droneId, vals.briefing_id, vals.type, started.toISOString(), duration, vals.location, vals.lat, vals.lon, vals.max_alt_m, vals.notes);
+    ).run(id, user.org_id, user.id, droneId, briefingId, vals.type, started.toISOString(), duration, vals.location, vals.lat, vals.lon, vals.max_alt_m, vals.notes);
   }
+
   const crew: CrewIn[] = [0, 1, 2, 3].map((i) => ({
     role: String(fd.get(`crew_role_${i}`) || ""),
     userId: String(fd.get(`crew_user_${i}`) || ""),
@@ -66,7 +95,8 @@ export async function saveFlight(fd: FormData) {
 }
 
 export async function deleteFlight(id: string) {
-  const user = await requireUser();
+  const user = await requireWriter();
+  // Samma regel för borttagning som redigering: ägare eller admin (#7)
   db.prepare("DELETE FROM flights WHERE id = ? AND org_id = ? AND (pilot_id = ? OR ? = 'admin')").run(id, user.org_id, user.id, user.role);
   revalidatePath("/logbook");
   redirect("/logbook");
@@ -76,7 +106,7 @@ export type ImportState = { ok?: string; error?: string };
 
 /** CSV: datum;minuter;plats;drönare;typ;anteckning  (komma eller semikolon) */
 export async function importCsv(_: ImportState, fd: FormData): Promise<ImportState> {
-  const user = await requireUser();
+  const user = await requireWriter();
   const file = fd.get("file") as File | null;
   if (!file || file.size === 0) return { error: "Välj en CSV-fil." };
   const text = await file.text();
@@ -115,9 +145,16 @@ export async function importCsv(_: ImportState, fd: FormData): Promise<ImportSta
 export type TrackPoint = { t: number; lat: number; lon: number; alt: number | null; bat: number | null };
 
 export async function importTrack(payload: { points: TrackPoint[]; droneId: string | null; fileName: string; startedAt: string | null }) {
-  const user = await requireUser();
+  const user = await requireWriter();
   const pts = payload.points.filter((p) => Number.isFinite(p.lat) && Number.isFinite(p.lon) && !(p.lat === 0 && p.lon === 0));
   if (pts.length < 2) return { error: "Hittade inga giltiga GPS-punkter i loggen." };
+
+  let validDrone = payload.droneId;
+  if (validDrone) {
+    const vd = db.prepare("SELECT id FROM drones WHERE id = ? AND org_id = ?").get(validDrone, user.org_id);
+    if (!vd) validDrone = null;
+  }
+
   const durationMin = (pts[pts.length - 1].t - pts[0].t) / 60000;
   let dist = 0;
   for (let i = 1; i < pts.length; i++) {
@@ -139,7 +176,7 @@ export async function importTrack(payload: { points: TrackPoint[]; droneId: stri
     `INSERT INTO flights (id, org_id, pilot_id, drone_id, type, started_at, duration_min, location, lat, lon, max_alt_m, distance_m, battery_start, battery_end, track, source, notes)
      VALUES (?, ?, ?, ?, 'standard', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'log', ?)`
   ).run(
-    id, user.org_id, user.id, payload.droneId, started.toISOString(), Math.round(durationMin * 10) / 10, place,
+    id, user.org_id, user.id, validDrone, started.toISOString(), Math.round(durationMin * 10) / 10, place,
     pts[0].lat, pts[0].lon, alts.length ? Math.max(...alts) : null, Math.round(dist),
     bats.length ? bats[0] : null, bats.length ? bats[bats.length - 1] : null, JSON.stringify(track), `Importerad från ${payload.fileName}`
   );

@@ -8,11 +8,13 @@ export function ChecklistRunner({
   items,
   drones,
   defaultDrone,
+  briefingId,
 }: {
   id: string;
   items: string[];
   drones: { id: string; name: string }[];
   defaultDrone: string | null;
+  briefingId?: string | null;
 }) {
   const [checked, setChecked] = useState<Set<number>>(new Set());
   const [drone, setDrone] = useState(defaultDrone ?? "");
@@ -45,13 +47,13 @@ export function ChecklistRunner({
           </label>
         ))}
       </div>
-      <div className="row">
+      <div className="row" style={{ flexWrap: "wrap", alignItems: "center", gap: 8 }}>
         <button
           className="btn"
           disabled={pending || checked.size === 0}
           onClick={() =>
             start(async () => {
-              await saveRun(id, drone || null, [...checked].sort((a, b) => a - b));
+              await saveRun(id, drone || null, [...checked].sort((a, b) => a - b), briefingId);
               setSaved(done ? "Checklistan är klar och sparad." : "Delvis genomförd checklista sparad.");
               setChecked(new Set());
             })
@@ -60,7 +62,16 @@ export function ChecklistRunner({
           {done ? "Klar – spara" : "Spara genomgång"}
         </button>
         <button type="button" className="btn secondary" onClick={() => setChecked(new Set(items.map((_, i) => i)))}>Bocka alla</button>
-        {saved && <span className="small" style={{ color: "var(--ok)" }}>{saved}</span>}
+        {saved && (
+          <div className="row small" style={{ color: "var(--ok)", alignItems: "center" }}>
+            <span>✓ {saved}</span>
+            {briefingId && (
+              <a href={`/logbook/new?briefing=${briefingId}${drone ? `&drone=${drone}` : ""}`} className="btn small" style={{ marginLeft: 8 }}>
+                ✈ Gå till loggbok →
+              </a>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );

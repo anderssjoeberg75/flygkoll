@@ -2,7 +2,7 @@
 
 import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
-import { requireUser } from "@/lib/auth";
+import { requireUser, requireWriter } from "@/lib/auth";
 import { db, newId } from "@/lib/db";
 import { buildBriefing } from "@/lib/briefing";
 import { getDrone } from "@/lib/fleet";
@@ -11,7 +11,7 @@ import { parseLocalStockholm } from "@/lib/format";
 export type CreateState = { error?: string };
 
 async function generate(params: { lat: number; lon: number; radius: number; when: Date; durationH: number; droneId: string | null; name?: string }) {
-  const user = await requireUser();
+  const user = await requireWriter();
   const drone = getDrone(user.org_id, params.droneId);
   const result = await buildBriefing({
     lat: params.lat,
@@ -31,6 +31,8 @@ async function generate(params: { lat: number; lon: number; radius: number; when
   return id;
 }
 
+import { isInSweden } from "@/lib/boundary";
+
 export async function createBriefing(_: CreateState, fd: FormData): Promise<CreateState> {
   const lat = Number(fd.get("lat"));
   const lon = Number(fd.get("lon"));
@@ -38,7 +40,7 @@ export async function createBriefing(_: CreateState, fd: FormData): Promise<Crea
   const whenStr = String(fd.get("when") || "");
   const durationH = Math.min(12, Math.max(0.5, Number(fd.get("duration")) || 3));
   if (!Number.isFinite(lat) || !Number.isFinite(lon) || !fd.get("lat")) return { error: "Välj en plats på kartan." };
-  if (lat < 54 || lat > 70 || lon < 9 || lon > 25) return { error: "Platsen ligger utanför Sverige – datakällorna täcker svenskt luftrum." };
+  if (!isInSweden(lat, lon)) return { error: "Platsen ligger utanför Sverige – datakällorna täcker svenskt luftrum." };
   if (!whenStr) return { error: "Ange datum och tid." };
   const when = parseLocalStockholm(whenStr);
   const id = await generate({ lat, lon, radius, when, durationH, droneId: String(fd.get("drone") || "") || null, name: String(fd.get("name") || "").trim() || undefined });
@@ -46,7 +48,7 @@ export async function createBriefing(_: CreateState, fd: FormData): Promise<Crea
 }
 
 export async function rerunBriefing(id: string, keepTime: boolean) {
-  const user = await requireUser();
+  const user = await requireWriter();
   const b = db.prepare("SELECT * FROM briefings WHERE id = ? AND org_id = ?").get(id, user.org_id) as
     | { lat: number; lon: number; radius_m: number; flight_time: string; duration_h: number; drone_id: string | null; name: string }
     | undefined;
@@ -57,20 +59,20 @@ export async function rerunBriefing(id: string, keepTime: boolean) {
 }
 
 export async function deleteBriefing(id: string) {
-  const user = await requireUser();
+  const user = await requireWriter();
   db.prepare("DELETE FROM briefings WHERE id = ? AND org_id = ? AND (user_id = ? OR ? = 'admin')").run(id, user.org_id, user.id, user.role);
   revalidatePath("/briefings");
 }
 
 export async function renameBriefing(id: string, fd: FormData) {
-  const user = await requireUser();
+  const user = await requireWriter();
   const name = String(fd.get("name") || "").trim();
   if (name) db.prepare("UPDATE briefings SET name = ? WHERE id = ? AND org_id = ?").run(name, id, user.org_id);
   revalidatePath(`/briefings/${id}`);
 }
 
 export async function toggleShare(id: string) {
-  const user = await requireUser();
+  const user = await requireWriter();
   db.prepare("UPDATE briefings SET shared = 1 - shared WHERE id = ? AND org_id = ? AND user_id = ?").run(id, user.org_id, user.id);
   revalidatePath(`/briefings/${id}`);
 }

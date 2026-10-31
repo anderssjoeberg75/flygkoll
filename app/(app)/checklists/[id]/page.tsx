@@ -7,8 +7,15 @@ import { fmtDateTime } from "@/lib/format";
 import { ChecklistRunner } from "@/components/ChecklistRunner";
 import { duplicateChecklist, deleteChecklist } from "../actions";
 
-export default async function RunChecklist({ params }: { params: Promise<{ id: string }> }) {
+export default async function RunChecklist({
+  params,
+  searchParams,
+}: {
+  params: Promise<{ id: string }>;
+  searchParams?: Promise<{ briefing?: string; drone?: string }>;
+}) {
   const { id } = await params;
+  const sp = searchParams ? await searchParams : undefined;
   const user = await requireUser();
   const c = db.prepare("SELECT * FROM checklists WHERE id = ? AND org_id = ?").get(id, user.org_id) as { id: string; name: string; items: string; drone_id: string | null } | undefined;
   if (!c) notFound();
@@ -19,7 +26,12 @@ export default async function RunChecklist({ params }: { params: Promise<{ id: s
   return (
     <>
       <div className="page-head">
-        <div><h1>{c.name}</h1><p className="muted" style={{ margin: 0 }}>{items.length} punkter</p></div>
+        <div>
+          <h1>{c.name}</h1>
+          <p className="muted" style={{ margin: 0 }}>
+            {items.length} punkter{sp?.briefing ? " · Kopplad till briefing" : ""}
+          </p>
+        </div>
         {user.role === "admin" && (
           <div className="row">
             <Link className="btn secondary small" href={`/checklists/${id}/edit`}>Redigera</Link>
@@ -29,7 +41,13 @@ export default async function RunChecklist({ params }: { params: Promise<{ id: s
         )}
       </div>
       <div className="grid" style={{ gridTemplateColumns: "minmax(0,2fr) minmax(240px,1fr)", alignItems: "start" }}>
-        <ChecklistRunner id={id} items={items} drones={listDrones(user.org_id).map((d) => ({ id: d.id, name: d.name }))} defaultDrone={c.drone_id ?? user.default_drone_id} />
+        <ChecklistRunner
+          id={id}
+          items={items}
+          drones={listDrones(user.org_id).map((d) => ({ id: d.id, name: d.name }))}
+          defaultDrone={sp?.drone || c.drone_id || user.default_drone_id}
+          briefingId={sp?.briefing || null}
+        />
         <div className="card">
           <h2>Senaste genomgångar</h2>
           {runs.length === 0 ? <p className="small muted">Inga ännu.</p> : runs.map((r, i) => (

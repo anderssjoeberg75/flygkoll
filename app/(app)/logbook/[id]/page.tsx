@@ -32,6 +32,21 @@ export default async function FlightPage({ params }: { params: Promise<{ id: str
   const t0 = track[0]?.t ?? 0;
   const canEdit = f.pilot_id === user.id || user.role === "admin";
 
+  const briefing = f.briefing_id
+    ? (db.prepare("SELECT id, name, status, flight_time FROM briefings WHERE id = ?").get(f.briefing_id) as
+        | { id: string; name: string; status: string; flight_time: string }
+        | undefined)
+    : null;
+  const checklistRuns = db
+    .prepare(
+      `SELECT r.*, c.name AS checklist_name
+       FROM checklist_runs r
+       JOIN checklists c ON c.id = r.checklist_id
+       WHERE r.flight_id = ? OR (r.briefing_id IS NOT NULL AND r.briefing_id = ?)
+       ORDER BY r.created_at DESC`
+    )
+    .all(id, f.briefing_id ?? "") as { id: string; checklist_name: string; completed: number; checked: string; created_at: string }[];
+
   return (
     <>
       <div className="page-head">
@@ -79,10 +94,31 @@ export default async function FlightPage({ params }: { params: Promise<{ id: str
             <ul>{crew.map((c, i) => <li key={i}><strong>{c.role}:</strong> {c.name}</li>)}</ul>
           )}
         </div>
-        <div className="card">
-          <h2>Anteckningar</h2>
-          <p style={{ whiteSpace: "pre-wrap" }}>{f.notes || <span className="muted">–</span>}</p>
-          {f.briefing_id && <Link href={`/briefings/${f.briefing_id}`} className="small">Visa briefingen</Link>}
+        <div className="card stack">
+          <h2>Underlag & Anteckningar</h2>
+          {briefing && (
+            <div className="card" style={{ padding: 12, background: "var(--panel-2)" }}>
+              <div className="spread">
+                <strong>Briefing: <Link href={`/briefings/${briefing.id}`}>{briefing.name}</Link></strong>
+                <span className={`badge ${briefing.status === "OK" ? "b-ok" : briefing.status === "CAUTION" ? "b-warn" : "b-danger"}`}>
+                  {briefing.status}
+                </span>
+              </div>
+            </div>
+          )}
+          {checklistRuns.length > 0 && (
+            <div>
+              <label>Genomförda checklistor</label>
+              <ul className="small" style={{ paddingLeft: 18, margin: "4px 0" }}>
+                {checklistRuns.map((r) => (
+                  <li key={r.id}>
+                    {r.checklist_name}: <span className={`badge ${r.completed ? "b-ok" : "b-warn"}`}>{r.completed ? "Genomförd" : "Delvis"}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+          <p style={{ whiteSpace: "pre-wrap" }}>{f.notes || <span className="muted">Inga anteckningar.</span>}</p>
         </div>
       </div>
     </>
