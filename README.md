@@ -1,7 +1,16 @@
-# Flygkoll – egen flygbriefing för drönarpiloter
+# Flygkoll – Digitalt besluts- och uppdragsstöd för drönarpiloter
 
-Självhostad webbapp med samma funktioner som DroneBrief: briefing på sekunder med luftrum, NOTAM,
-UAS-zoner, väder, skyddade områden, Kp-index och GPS-störning – plus loggbok, flotta, checklistor och organisation.
+Flygkoll är en webbapplikation utvecklad för drönarpiloter, företag och organisationer som utför drönaroperationer i Sverige. Systemet underlättar planering, säkerhet och regelefterlevnad inför varje flygning samt samlar all operativ administration på ett ställe.
+
+### Vad är sidan till för?
+
+Inför varje flygning med drönare kräver Transportstyrelsens och EASA:s regelverk att piloten kontrollerar luftrum, väderförhållanden, tillfälliga restriktioner och lokala föreskrifter. Att manuellt samla in underlag från olika myndigheter tar tid och ökar risken att restriktioner förbises.
+
+Flygkoll sammanställer och automatiserar detta på några sekunder:
+- **Automatisk flygbriefing**: Ange operationsområde och radie – Flygkoll hämtar och analyserar samtidigt officiella data från LFV, SMHI och Naturvårdsverket och ger en tydlig status (**OK**, **Försiktighet** eller **Tillstånd krävs**).
+- **Vägledning och föreskrifter**: Visar direkt vad som gäller om området berörs av kontrollzoner (CTR), flygplatser, helikopterplatser, restriktionsområden, NOTAM eller skyddade naturområden (naturreservat och nationalparker), inklusive direktlänkar för tillståndsansökan eller dispens.
+- **Väder- och säkerhetsunderlag**: Vindprofiler på 10, 80 och 120 m, byvindar, molnbas, sikt, officiella SMHI-varningar, sol- och skymningstider, Kp-index (solaktivitet) samt GPS-störningsaktivitet.
+- **Operativ administration**: Digital loggbok för piloter och besättning, hantering av drönarflotta med serviceintervall och underhållslogg, anpassningsbara checklistor före/efter flygning samt organisationsstöd med medlemmar och standardzoner.
 
 ## Kom igång
 
@@ -13,9 +22,9 @@ npm run build
 TZ=Europe/Stockholm npm start          # http://localhost:3000
 ```
 
-Första gången du öppnar sidan skapar du ett konto – det blir administratör för organisationen.
-Därefter är registreringen stängd; lägg till fler användare under **Organisation**
-(eller sätt `FLYGKOLL_OPEN_SIGNUP=1` för öppen registrering).
+Första kontot som registreras blir administratör för organisationen.
+Fler användare kan bjudas in under **Organisation** eller registrera sig direkt via registreringssidan
+(öppen registrering kan vid behov stängas med miljövariabeln `FLYGKOLL_OPEN_SIGNUP=0`).
 
 All data ligger i SQLite-filen `data/flygkoll.db` (ändra med `FLYGKOLL_DB=/sökväg/fil.db`).
 Långsamma kartdata från Naturvårdsverket cachas i `data/cache/` i 7 dagar.
