@@ -72,7 +72,8 @@ export async function logMaintenance(droneId: string, fd: FormData) {
   const scheduleId = String(fd.get("schedule_id") || "") || null;
   const wt = String(fd.get("work_type_free") || "").trim() || String(fd.get("work_type") || "").trim() || "Service";
   const rawDone = fd.get("done_at") ? String(fd.get("done_at")) : "";
-  const done = rawDone ? parseLocalStockholm(rawDone.includes("T") ? rawDone : `${rawDone}T12:00`) : new Date();
+  const parsedDone = rawDone ? parseLocalStockholm(rawDone.includes("T") ? rawDone : `${rawDone}T12:00`) : new Date();
+  const done = isNaN(parsedDone.getTime()) ? new Date() : parsedDone;
   db.prepare("INSERT INTO maint_logs (id, drone_id, schedule_id, user_id, work_type, done_at, notes) VALUES (?, ?, ?, ?, ?, ?, ?)").run(
     newId(), droneId, scheduleId, user.id, wt, done.toISOString(), String(fd.get("notes") || "")
   );

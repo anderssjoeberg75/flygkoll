@@ -46,7 +46,8 @@ export async function saveFlight(fd: FormData) {
 
   // Om flygningen inte finns: generera ALLTID ett nytt id för att undvika PK-kollisioner (#7)
   const id = existing ? existing.id : newId();
-  const started = parseLocalStockholm(String(fd.get("started_at")));
+  const started = parseLocalStockholm(String(fd.get("started_at") || ""));
+  if (isNaN(started.getTime())) redirect(existing ? `/logbook/${existing.id}/edit` : "/logbook/new");
   const duration = Math.max(0, Number(fd.get("duration_min")) || 0);
 
   // Validera att drönaren tillhör organisationen (#7)
