@@ -8,6 +8,7 @@ import { GeoMap } from "@/components/GeoMap";
 import { WindProfile } from "@/components/WindProfile";
 import { PrintButton } from "@/components/PrintButton";
 import { AffectedAreasTable } from "@/components/AffectedAreasTable";
+import { StatusRing } from "@/components/StatusRing";
 import { rerunBriefing, toggleShare, renameBriefing } from "../actions";
 import { zoneFromBriefing } from "../../settings/actions";
 
@@ -33,18 +34,22 @@ export default async function BriefingPage({ params }: { params: Promise<{ id: s
 
   return (
     <>
-      <div className="page-head">
-        <div>
-          <div className="row small muted"><span className="badge b-info">Briefing</span> <span className="mono">{row.id}</span> · Skapad {fmtDateTime(r.generatedAt)}</div>
-          <h1>{row.name}</h1>
-          <div className="row">
-            <span className={`badge ${st.cls}`}>{st.text}</span>
-            <span className="muted">Giltig {fmtDateTime(r.from)} – {fmtTime(r.to)} · radie {r.radius_m} m · {r.center[1].toFixed(5)}, {r.center[0].toFixed(5)}</span>
+      <div className="page-head fk-rise">
+        <div className="row" style={{ gap: 20, flexWrap: "nowrap", alignItems: "center" }}>
+          <StatusRing status={r.status} label={st.text} />
+          <div>
+            <div className="eyebrow" style={{ color: `var(--${r.status === "OK" ? "ok" : r.status === "CAUTION" ? "warn" : "danger"})` }}>
+              {st.text}{permission.length ? ` · ${permission.length} område(n) berör flygningen` : ""}
+            </div>
+            <h1>{row.name}</h1>
+            <div className="muted small">
+              Giltig {fmtDateTime(r.from)} – {fmtTime(r.to)} · radie {r.radius_m} m · {r.center[1].toFixed(5)}, {r.center[0].toFixed(5)} · <span className="mono">{row.id}</span>
+            </div>
           </div>
         </div>
         <div className="row no-print" style={{ flexWrap: "wrap" }}>
-          <Link href={`/checklists?briefing=${row.id}&drone=${row.drone_id || ""}`} className="btn secondary small">✓ Kör checklista</Link>
-          <Link href={`/logbook/new?briefing=${row.id}`} className="btn small">✈ Logga flygning</Link>
+          <Link href={`/checklists?briefing=${row.id}&drone=${row.drone_id || ""}`} className="btn secondary small">Kör checklista</Link>
+          <Link href={`/logbook/new?briefing=${row.id}`} className="btn small">Logga flygning</Link>
           <a className="btn secondary small" href={`/api/briefings/${row.id}/kml`}>Exportera KML</a>
           <PrintButton />
           <form action={rerunBriefing.bind(null, row.id, true)}><button className="btn secondary small">Uppdatera</button></form>
@@ -54,7 +59,7 @@ export default async function BriefingPage({ params }: { params: Promise<{ id: s
 
       {backgroundPending && (
         <div className="banner" style={{ background: "var(--info-bg, #eff6ff)", color: "var(--info-fg, #1e40af)", padding: "12px 16px", borderRadius: "8px", marginBottom: "16px", border: "1px solid var(--info-border, #93c5fd)", display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
-          <span>ℹ️ <strong>Naturvårdsdata hämtas i bakgrunden</strong> (Naturvårdsregistret / Natura 2000). När hämtningen är klar kan du uppdatera briefingen för att inkludera områdena.</span>
+          <span><strong>Naturvårdsdata hämtas i bakgrunden</strong> (Naturvårdsregistret / Natura 2000). När hämtningen är klar kan du uppdatera briefingen för att inkludera områdena.</span>
           <form action={rerunBriefing.bind(null, row.id, true)} style={{ margin: 0 }}>
             <button className="btn small">Uppdatera data nu</button>
           </form>
@@ -63,12 +68,12 @@ export default async function BriefingPage({ params }: { params: Promise<{ id: s
 
       {r.status === "INCOMPLETE" && (
         <div className="notice n-danger" style={{ marginBottom: 16 }}>
-          <strong>⚠️ Ofullständigt luftrumsunderlag</strong>
+          <strong>Ofullständigt luftrumsunderlag</strong>
           En eller flera officiella LFV-källor svarade inte ({lfvSources.filter((s) => !s.ok).map((s) => s.label).join(", ") || "LFV"}). Flygförbud eller restriktioner kan föreligga som inte syns i briefingen. Kontrollera alltid AROWeb eller Drönarkartan manuellt innan flygning!
         </div>
       )}
 
-      <div className="grid g4">
+      <div className="grid g4 fk-rise" style={{ ["--i" as string]: 1 }}>
         <div className={`card stat ${r.status === "OK" ? "ok" : r.status === "CAUTION" ? "warn" : "danger"}`}>
           <span className="label">Luftrumsstatus</span><span className="value">{st.text}</span>
           <span className="small muted">{permission.length ? `${permission.length} område(n) berör flygningen` : "Inga överlappande zoner"}</span>

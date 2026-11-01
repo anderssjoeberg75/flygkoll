@@ -48,7 +48,7 @@ export function MapPicker({
   useEffect(() => {
     const m = map.current, Lf = L.current;
     if (!m || !Lf || !pos) return;
-    if (!marker.current) marker.current = Lf.circle([pos.lat, pos.lon], { radius, color: "#0f766e", weight: 2, fillOpacity: 0.12 }).addTo(m);
+    if (!marker.current) marker.current = Lf.circle([pos.lat, pos.lon], { radius, color: "#0a6cff", weight: 2, fillOpacity: 0.12 }).addTo(m);
     marker.current.setLatLng([pos.lat, pos.lon]);
     marker.current.setRadius(radius);
   }, [pos, radius, ready]);

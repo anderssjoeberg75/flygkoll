@@ -11,8 +11,9 @@ export default async function Settings() {
     <>
       <div className="page-head"><div><h1>Inställningar</h1><p className="muted" style={{ margin: 0 }}>{user.email}</p></div></div>
       {Boolean(user.must_change_password) && (
-        <div className="banner" style={{ background: "var(--warn-bg, #fef3c7)", color: "var(--warn-fg, #92400e)", padding: "12px 16px", borderRadius: "8px", marginBottom: "16px", border: "1px solid var(--warn-border, #fcd34d)" }}>
-          ⚠️ <strong>Du har ett tillfälligt lösenord.</strong> Vänligen byt lösenord i formuläret till höger för att få full tillgång till systemet.
+        <div className="notice n-warn" style={{ marginBottom: 16 }}>
+          <strong>Du har ett tillfälligt lösenord</strong>
+          Byt lösenord i formuläret till höger för att få full tillgång till systemet.
         </div>
       )}
       <div className="grid" style={{ gridTemplateColumns: "minmax(0,2fr) minmax(260px,1fr)", alignItems: "start" }}>
