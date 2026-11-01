@@ -1,4 +1,4 @@
-import { requireUser } from "@/lib/auth";
+import { requireUser, userPhotoUrl } from "@/lib/auth";
 import { listDrones } from "@/lib/fleet";
 import { StateForm } from "@/components/StateForm";
 import { saveProfile, changePassword } from "./actions";
@@ -7,6 +7,7 @@ export default async function Settings() {
   const user = await requireUser();
   const drones = listDrones(user.org_id);
   const classes: string[] = JSON.parse(user.license_classes || "[]");
+  const photo = userPhotoUrl(user);
   return (
     <>
       <div className="page-head"><div><h1>Inställningar</h1><p className="muted" style={{ margin: 0 }}>{user.email}</p></div></div>
@@ -14,12 +15,13 @@ export default async function Settings() {
         <StateForm action={saveProfile}>
           <h2>Profil</h2>
           <div className="row">
-            {user.photo ? <img src={user.photo} alt="" width={56} height={56} style={{ borderRadius: "50%", objectFit: "cover" }} /> : (
+            {photo ? <img src={photo} alt="" width={56} height={56} style={{ borderRadius: "50%", objectFit: "cover" }} /> : (
               <div style={{ width: 56, height: 56, borderRadius: "50%", background: "var(--accent-soft)", display: "grid", placeItems: "center", fontWeight: 700 }}>
                 {(user.first_name || user.email)[0].toUpperCase()}
               </div>
             )}
-            <div style={{ flex: 1 }}><label>Profilbild</label><input type="file" name="photo" accept="image/*" /></div>
+            <div style={{ flex: 1 }}><label>Profilbild (PNG/JPEG/WebP, max 400 kB)</label><input type="file" name="photo" accept="image/png,image/jpeg,image/webp,image/gif" /></div>
+            {photo && <label className="row" style={{ fontWeight: 400 }}><input type="checkbox" name="remove_photo" /> Ta bort</label>}
           </div>
           <div className="grid g2">
             <div><label>Förnamn</label><input name="first_name" defaultValue={user.first_name} /></div>

@@ -24,6 +24,11 @@ export function getDrone(orgId: string, id: string | null | undefined): Drone | 
   return (db.prepare("SELECT * FROM drones WHERE org_id = ? AND id = ?").get(orgId, id) as Drone) ?? null;
 }
 
+/** Drönar-id om drönaren tillhör organisationen, annars null (skyddar mot id:n från andra organisationer). */
+export function orgDroneId(orgId: string, id: string | null | undefined): string | null {
+  return getDrone(orgId, id)?.id ?? null;
+}
+
 export function scheduleStatus(s: Schedule, hoursNow: number, now = new Date()) {
   const since = s.last_done_at ? new Date(s.last_done_at) : null;
   let daysLeft: number | null = null;
@@ -39,14 +44,33 @@ export function scheduleStatus(s: Schedule, hoursNow: number, now = new Date()) 
 }
 
 export function dueMaintenance(orgId: string) {
+  const drones = listDrones(orgId);
+  if (drones.length === 0) return [];
+  const byId = new Map(drones.map((d) => [d.id, d]));
+  // flygtimmar per drönare och aktiva scheman i två frågor i stället för två per drönare
+  const hours = new Map(
+    (
+      db
+        .prepare(
+          `SELECT f.drone_id AS id, COALESCE(SUM(f.duration_min), 0) / 60.0 AS h
+           FROM flights f JOIN drones d ON d.id = f.drone_id
+           WHERE d.org_id = ? AND d.archived = 0 AND f.type != 'simulator' GROUP BY f.drone_id`
+        )
+        .all(orgId) as { id: string; h: number }[]
+    ).map((r) => [r.id, r.h])
+  );
+  const schedules = db
+    .prepare(
+      `SELECT s.* FROM maint_schedules s JOIN drones d ON d.id = s.drone_id
+       WHERE d.org_id = ? AND d.archived = 0 AND s.active = 1`
+    )
+    .all(orgId) as Schedule[];
   const out: { drone: Drone; schedule: Schedule; status: ReturnType<typeof scheduleStatus> }[] = [];
-  for (const d of listDrones(orgId)) {
-    const h = droneHours(d.id);
-    const ss = db.prepare("SELECT * FROM maint_schedules WHERE drone_id = ? AND active = 1").all(d.id) as Schedule[];
-    for (const s of ss) {
-      const st = scheduleStatus(s, h);
-      if (st.overdue || st.soon) out.push({ drone: d, schedule: s, status: st });
-    }
+  for (const s of schedules) {
+    const drone = byId.get(s.drone_id);
+    if (!drone) continue;
+    const st = scheduleStatus(s, hours.get(s.drone_id) ?? 0);
+    if (st.overdue || st.soon) out.push({ drone, schedule: s, status: st });
   }
   return out;
 }

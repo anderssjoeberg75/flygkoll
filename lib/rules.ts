@@ -65,3 +65,50 @@ export function vlosDistances(charDimM: number, kind: "multirotor" | "fixedwing"
   const dlos = visibilityKm ? Math.min(visibilityKm * 1000 * 0.3, 0.3 * 1000 * visibilityKm) : null;
   return { alos: Math.round(alos), dlos: dlos ? Math.round(dlos) : null };
 }
+
+/* ---------- Drönarkort / kompetensbevis ---------- */
+
+export type LicenseState = { level: "none" | "expired" | "soon" | "ok"; daysLeft: number | null };
+
+/** Status för ett drönarkort med utgångsdatum (YYYY-MM-DD). "soon" = inom warnDays dagar. */
+export function licenseState(expiry: string | null | undefined, now = new Date(), warnDays = 60): LicenseState {
+  if (!expiry) return { level: "none", daysLeft: null };
+  const end = new Date(`${expiry}T23:59:59`);
+  if (isNaN(end.getTime())) return { level: "none", daysLeft: null };
+  const daysLeft = Math.floor((end.getTime() - now.getTime()) / 864e5);
+  return { level: daysLeft < 0 ? "expired" : daysLeft <= warnDays ? "soon" : "ok", daysLeft };
+}
+
+/** Vilket kompetensbevis drönaren kräver i öppen kategori/STS (förenklat). null = inget krav. */
+export function requiredLicense(d: DroneLike | null): string | null {
+  if (!d) return null;
+  const c = d.class_mark;
+  if (c === "C0" || (c === "none" && d.mtom_g > 0 && d.mtom_g < 250)) return null;
+  if (c === "C5") return "STS-01";
+  if (c === "C6") return "STS-02";
+  return "A1/A3";
+}
+
+/** Varning om piloten saknar giltigt kompetensbevis för drönaren vid flygtillfället. */
+export function licenseNotice(
+  d: DroneLike | null,
+  pilot: { license_classes: string; license_expiry: string | null },
+  at: Date
+): { level: "warn" | "danger"; title: string; text: string } | null {
+  const need = requiredLicense(d);
+  if (!need) return null;
+  let classes: string[] = [];
+  try {
+    classes = JSON.parse(pilot.license_classes || "[]");
+  } catch {
+    /* ogiltig data */
+  }
+  const st = licenseState(pilot.license_expiry, at);
+  if (!classes.includes(need)) {
+    return { level: "warn", title: "Kompetensbevis saknas", text: `${d!.name} kräver ${need}, men det finns inte angivet i din profil. Uppdatera under Inställningar om du har det.` };
+  }
+  if (st.level === "expired") {
+    return { level: "danger", title: "Drönarkortet har gått ut", text: `Ditt drönarkort gick ut ${pilot.license_expiry} – före flygtillfället. Förnya det innan du flyger.` };
+  }
+  return null;
+}

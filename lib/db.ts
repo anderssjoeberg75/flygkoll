@@ -5,7 +5,7 @@ import crypto from "node:crypto";
 
 const DB_PATH = process.env.FLYGKOLL_DB || path.join(process.cwd(), "data", "flygkoll.db");
 
-const SCHEMA = `
+export const SCHEMA = `
 PRAGMA journal_mode = WAL;
 PRAGMA foreign_keys = ON;
 
@@ -159,14 +159,70 @@ CREATE TABLE IF NOT EXISTS checklist_runs (
 `;
 
 declare global {
-  // eslint-disable-next-line no-var
   var __flygkollDb: Database.Database | undefined;
+}
+
+/**
+ * Versionerade migreringar. SCHEMA ovan är version 0 (ursprungligt schema) och ändras aldrig;
+ * alla ändringar läggs till här och körs i ordning. PRAGMA user_version håller reda på nivån.
+ */
+export const MIGRATIONS: string[] = [
+  // 1: index för vanliga frågor
+  `
+  CREATE INDEX IF NOT EXISTS idx_flights_org_started ON flights(org_id, started_at);
+  CREATE INDEX IF NOT EXISTS idx_flights_pilot ON flights(pilot_id, started_at);
+  CREATE INDEX IF NOT EXISTS idx_flights_drone ON flights(drone_id);
+  CREATE INDEX IF NOT EXISTS idx_flight_crew_flight ON flight_crew(flight_id);
+  CREATE INDEX IF NOT EXISTS idx_briefings_org_created ON briefings(org_id, created_at);
+  CREATE INDEX IF NOT EXISTS idx_briefings_user ON briefings(user_id, created_at);
+  CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
+  CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at);
+  CREATE INDEX IF NOT EXISTS idx_users_org ON users(org_id);
+  CREATE INDEX IF NOT EXISTS idx_drones_org ON drones(org_id);
+  CREATE INDEX IF NOT EXISTS idx_maint_schedules_drone ON maint_schedules(drone_id);
+  CREATE INDEX IF NOT EXISTS idx_maint_logs_drone ON maint_logs(drone_id, done_at);
+  CREATE INDEX IF NOT EXISTS idx_checklists_org ON checklists(org_id);
+  CREATE INDEX IF NOT EXISTS idx_checklist_runs_checklist ON checklist_runs(checklist_id, created_at);
+  CREATE INDEX IF NOT EXISTS idx_zones_org ON zones(org_id);
+  CREATE INDEX IF NOT EXISTS idx_work_types_org ON work_types(org_id);
+  `,
+  // 2: inaktivering av användare, tvingat lösenordsbyte och skydd mot att loggbok raderas
+  `
+  ALTER TABLE users ADD COLUMN disabled_at TEXT;
+  ALTER TABLE users ADD COLUMN must_change_password INTEGER NOT NULL DEFAULT 0;
+  CREATE TRIGGER IF NOT EXISTS users_no_delete_with_history
+  BEFORE DELETE ON users
+  WHEN EXISTS (SELECT 1 FROM flights WHERE pilot_id = OLD.id)
+    OR EXISTS (SELECT 1 FROM briefings WHERE user_id = OLD.id)
+    OR EXISTS (SELECT 1 FROM checklist_runs WHERE user_id = OLD.id)
+  BEGIN
+    SELECT RAISE(ABORT, 'Användaren har loggade flygningar, briefingar eller checklistor – inaktivera i stället för att radera.');
+  END;
+  `,
+  // 3: koppla checklistgenomgångar till briefing och flygning
+  `
+  ALTER TABLE checklist_runs ADD COLUMN briefing_id TEXT;
+  ALTER TABLE checklist_runs ADD COLUMN flight_id TEXT;
+  CREATE INDEX IF NOT EXISTS idx_checklist_runs_briefing ON checklist_runs(briefing_id);
+  CREATE INDEX IF NOT EXISTS idx_checklist_runs_flight ON checklist_runs(flight_id);
+  `,
+];
+
+export function migrate(db: Database.Database) {
+  db.exec(SCHEMA);
+  const current = db.pragma("user_version", { simple: true }) as number;
+  for (let v = current; v < MIGRATIONS.length; v++) {
+    db.transaction(() => {
+      db.exec(MIGRATIONS[v]);
+      db.pragma(`user_version = ${v + 1}`);
+    })();
+  }
 }
 
 function open(): Database.Database {
   fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
   const db = new Database(DB_PATH);
-  db.exec(SCHEMA);
+  migrate(db);
   return db;
 }
 

@@ -1,13 +1,14 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { requireUser } from "@/lib/auth";
+import { requireUser, canWrite, displayName } from "@/lib/auth";
 import { db } from "@/lib/db";
 import type { BriefingResult } from "@/lib/briefing";
-import { fmtDateTime, fmtTime, STATUS_LABEL, SEVERITY_LABEL, compass } from "@/lib/format";
+import { fmtDateTime, fmtTime, STATUS_LABEL, compass } from "@/lib/format";
 import { GeoMap } from "@/components/GeoMap";
 import { WindProfile } from "@/components/WindProfile";
 import { PrintButton } from "@/components/PrintButton";
 import { AffectedAreasTable } from "@/components/AffectedAreasTable";
+import { NatureRefresher } from "@/components/NatureRefresher";
 import { rerunBriefing, toggleShare, renameBriefing } from "../actions";
 import { zoneFromBriefing } from "../../settings/actions";
 
@@ -25,10 +26,24 @@ export default async function BriefingPage({ params }: { params: Promise<{ id: s
   const windVal = wp0?.w10 ?? w?.wind ?? null;
   const windCls = windVal === null ? "" : windVal >= user.wind_red ? "danger" : windVal >= user.wind_yellow ? "warn" : "ok";
   const permission = r.hits.filter((h) => h.severity !== "info");
-  const info = r.hits.filter((h) => h.severity === "info");
   const lfvSources = r.sources.filter((s) => s.group === "LFV");
   const otherSources = r.sources.filter((s) => s.group !== "LFV");
   const isOwner = row.user_id === user.id;
+  const failedLfv = lfvSources.filter((s) => !s.ok);
+  // checklistor före flygning – drönarspecifika först – och genomgångar som gjorts för briefingen
+  const preflight = db
+    .prepare("SELECT id, name, drone_id FROM checklists WHERE org_id = ? AND kind = 'preflight' AND (drone_id IS NULL OR drone_id = ?) ORDER BY drone_id IS NULL, name")
+    .all(user.org_id, r.drone?.id ?? null) as { id: string; name: string; drone_id: string | null }[];
+  const runs = db
+    .prepare(
+      `SELECT r.id, r.created_at, r.completed, r.flight_id, c.name, u.first_name, u.last_name, u.email
+       FROM checklist_runs r JOIN checklists c ON c.id = r.checklist_id JOIN users u ON u.id = r.user_id
+       WHERE r.briefing_id = ? AND c.org_id = ? ORDER BY r.created_at`
+    )
+    .all(row.id, user.org_id) as { id: string; created_at: string; completed: number; flight_id: string | null; name: string; first_name: string; last_name: string; email: string }[];
+  const flights = db.prepare("SELECT id, started_at FROM flights WHERE briefing_id = ? AND org_id = ? ORDER BY started_at").all(row.id, user.org_id) as { id: string; started_at: string }[];
+  const writer = canWrite(user);
+  const naturePending = r.sources.some((s) => (s.key === "nr" || s.key === "n2k") && !s.ok && (s.pending || s.error?.startsWith("Stort område")));
 
   return (
     <>
@@ -44,15 +59,23 @@ export default async function BriefingPage({ params }: { params: Promise<{ id: s
         <div className="row no-print">
           <a className="btn secondary small" href={`/api/briefings/${row.id}/kml`}>Exportera KML</a>
           <PrintButton />
-          <form action={rerunBriefing.bind(null, row.id, true)}><button className="btn secondary small">Uppdatera</button></form>
-          <form action={rerunBriefing.bind(null, row.id, false)}><button className="btn small">Ny briefing nu</button></form>
+          {writer && <form action={rerunBriefing.bind(null, row.id, true)}><button className="btn secondary small">Uppdatera</button></form>}
+          {writer && <form action={rerunBriefing.bind(null, row.id, false)}><button className="btn small">Ny briefing nu</button></form>}
         </div>
       </div>
+
+      {failedLfv.length > 0 && (
+        <div className="notice n-danger" role="alert" style={{ marginBottom: 16 }}>
+          <strong>Luftrumsdata ofullständig – statusen kan inte bedömas säkert</strong>
+          Kunde inte hämta: {failedLfv.map((s) => s.label).join(", ")}. Klicka på <em>Uppdatera</em> eller kontrollera Drönarkartan och NOTAM direkt innan flygning.
+        </div>
+      )}
+      {naturePending && <NatureRefresher briefingId={row.id} />}
 
       <div className="grid g4">
         <div className={`card stat ${r.status === "OK" ? "ok" : r.status === "CAUTION" ? "warn" : "danger"}`}>
           <span className="label">Luftrumsstatus</span><span className="value">{st.text}</span>
-          <span className="small muted">{permission.length ? `${permission.length} område(n) berör flygningen` : "Inga överlappande zoner"}</span>
+          <span className="small muted">{failedLfv.length ? `${failedLfv.length} LFV-källa(or) saknas` : permission.length ? `${permission.length} område(n) berör flygningen` : "Inga överlappande zoner"}</span>
         </div>
         <div className={`card stat ${windCls}`}>
           <span className="label">Vind (10 m)</span>
@@ -180,7 +203,7 @@ export default async function BriefingPage({ params }: { params: Promise<{ id: s
                 {grp.s.map((s) => (
                   <div key={s.key} className="spread" title={s.error}>
                     <span>{s.label}</span>
-                    <span className={`badge ${s.ok ? "b-ok" : "b-danger"}`}>{s.ok ? "OK" : "Fel"}</span>
+                    <span className={`badge ${s.ok ? "b-ok" : s.pending ? "b-warn" : "b-danger"}`}>{s.ok ? "OK" : s.pending ? "Laddar" : "Fel"}</span>
                   </div>
                 ))}
               </div>
@@ -189,20 +212,42 @@ export default async function BriefingPage({ params }: { params: Promise<{ id: s
         </div>
         <div className="card no-print stack">
           <h2>Hantera</h2>
-          {isOwner && (
+          {isOwner && writer && (
             <form action={renameBriefing.bind(null, row.id)} className="row">
               <input name="name" defaultValue={row.name} style={{ flex: 1 }} />
               <button className="btn secondary small">Byt namn</button>
             </form>
           )}
-          {isOwner && (
+          {isOwner && writer && (
             <form action={toggleShare.bind(null, row.id)} className="spread">
               <span className="small">{row.shared ? "Delad med organisationen" : "Privat"}</span>
               <button className="btn secondary small">{row.shared ? "Gör privat" : "Dela med org"}</button>
             </form>
           )}
-          <Link className="btn secondary small" href={`/logbook/new?briefing=${row.id}`}>Logga flygning från briefingen</Link>
-          <form action={zoneFromBriefing.bind(null, row.id)}><button className="btn secondary small" style={{ width: "100%" }}>Spara som standardzon</button></form>
+          <h3 style={{ margin: 0 }}>Inför flygningen</h3>
+          <ol className="small" style={{ margin: 0, paddingLeft: 18 }}>
+            <li>
+              Checklista före flygning:{" "}
+              {runs.length ? (
+                runs.map((x) => (
+                  <span key={x.id} className={`badge ${x.completed ? "b-ok" : "b-warn"}`} title={`${displayName(x)} ${fmtDateTime(x.created_at.replace(" ", "T") + "Z")}`}>
+                    {x.name}: {x.completed ? "klar" : "delvis"}
+                  </span>
+                ))
+              ) : (
+                <span className="muted">ingen genomförd än</span>
+              )}
+            </li>
+            <li>
+              Loggad flygning:{" "}
+              {flights.length ? flights.map((f) => <Link key={f.id} href={`/logbook/${f.id}`}>{fmtDateTime(f.started_at)} </Link>) : <span className="muted">ingen än</span>}
+            </li>
+          </ol>
+          {writer && preflight.map((c) => (
+            <Link key={c.id} className="btn secondary small" href={`/checklists/${c.id}?briefing=${row.id}`}>Kör checklista: {c.name}</Link>
+          ))}
+          {writer && <Link className="btn secondary small" href={`/logbook/new?briefing=${row.id}`}>Logga flygning från briefingen</Link>}
+          {writer && <form action={zoneFromBriefing.bind(null, row.id)}><button className="btn secondary small" style={{ width: "100%" }}>Spara som standardzon</button></form>}
         </div>
       </div>
 

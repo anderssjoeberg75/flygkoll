@@ -110,10 +110,10 @@ export function getAreaDetails(hit: AreaHit): AreaDetails {
   const isProtectedNature = layer === "NR" || layer === "NP" || layer === "N2000" || /naturreservat|nationalpark|landskapsbild|naturvård/i.test(hit.layerLabel);
   const isPermitRequired = hit.severity === "permission";
 
-  let title = hit.name;
-  let typeLabel = hit.layerLabel || layer;
-  let severityLabel = hit.severity === "permission" ? "Tillstånd krävs" : hit.severity === "caution" ? "Försiktighet" : "Info";
-  let badgeClass = hit.severity === "permission" ? "b-danger" : hit.severity === "caution" ? "b-warn" : "b-info";
+  const title = hit.name;
+  const typeLabel = hit.layerLabel || layer;
+  const severityLabel = hit.severity === "permission" ? "Tillstånd krävs" : hit.severity === "caution" ? "Försiktighet" : "Info";
+  const badgeClass = hit.severity === "permission" ? "b-danger" : hit.severity === "caution" ? "b-warn" : "b-info";
 
   let whyProtected = "";
   const howToComply: string[] = [];

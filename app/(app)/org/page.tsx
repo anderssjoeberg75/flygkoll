@@ -1,17 +1,23 @@
 import Link from "next/link";
-import { requireUser } from "@/lib/auth";
+import { requireUser, orgLogoUrl, userPhotoUrl } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { orgMembers } from "@/lib/members";
-import { fmtMinutes } from "@/lib/format";
+import { fmtDate, fmtMinutes } from "@/lib/format";
+import { licenseState } from "@/lib/rules";
 import { StateForm } from "@/components/StateForm";
-import { saveOrg, addMember, setRole, removeMember, addZone, removeZone } from "../settings/actions";
+import { saveOrg, addMember, setRole, removeMember, enableMember, resetMemberPassword, addZone, removeZone } from "../settings/actions";
 
 const ROLE: Record<string, string> = { admin: "Administratör", pilot: "Pilot", viewer: "Läsare" };
 
 export default async function Org() {
   const user = await requireUser();
   const isAdmin = user.role === "admin";
-  const members = orgMembers(user.org_id);
+  const members = orgMembers(user.org_id, isAdmin);
+  const logo = orgLogoUrl(user);
+  const licenses = members
+    .filter((m) => !m.disabled_at && m.role !== "viewer")
+    .map((m) => ({ m, st: licenseState(m.license_expiry) }))
+    .sort((a, b) => (a.st.daysLeft ?? -1e9) - (b.st.daysLeft ?? -1e9));
   const zones = db.prepare("SELECT * FROM zones WHERE org_id = ? ORDER BY name").all(user.org_id) as { id: string; name: string; lat: number; lon: number; radius_m: number }[];
 
   // analys
@@ -43,9 +49,9 @@ export default async function Org() {
             <h2>Inställningar</h2>
             <div><label>Namn</label><input name="name" defaultValue={user.org_name} /></div>
             <div className="row">
-              {user.logo_url && <img src={user.logo_url} alt="" width={48} height={48} style={{ borderRadius: 8, objectFit: "contain", background: "var(--panel-2)" }} />}
-              <div style={{ flex: 1 }}><label>Logotyp</label><input type="file" name="logo" accept="image/*" /></div>
-              {user.logo_url && <label className="row" style={{ fontWeight: 400 }}><input type="checkbox" name="remove_logo" /> Ta bort</label>}
+              {logo && <img src={logo} alt="" width={48} height={48} style={{ borderRadius: 8, objectFit: "contain", background: "var(--panel-2)" }} />}
+              <div style={{ flex: 1 }}><label>Logotyp (PNG/JPEG/WebP, max 300 kB)</label><input type="file" name="logo" accept="image/png,image/jpeg,image/webp,image/gif" /></div>
+              {logo && <label className="row" style={{ fontWeight: 400 }}><input type="checkbox" name="remove_logo" /> Ta bort</label>}
             </div>
             <h3>Vindgränser (m/s)</h3>
             <div className="grid g2">
@@ -87,14 +93,15 @@ export default async function Org() {
             <thead><tr><th>Namn</th><th>E-post</th><th>Roll</th>{isAdmin && <th></th>}</tr></thead>
             <tbody>
               {members.map((m) => (
-                <tr key={m.id}>
+                <tr key={m.id} style={m.disabled_at ? { opacity: 0.6 } : undefined}>
                   <td className="row">
-                    {m.photo ? <img src={m.photo} alt="" width={28} height={28} style={{ borderRadius: "50%", objectFit: "cover" }} /> : null}
+                    {m.has_photo ? <img src={userPhotoUrl(m)!} alt="" width={28} height={28} style={{ borderRadius: "50%", objectFit: "cover" }} /> : null}
                     {m.name}
+                    {m.disabled_at && <span className="badge b-muted">Inaktiverad {fmtDate(m.disabled_at)}</span>}
                   </td>
                   <td>{m.email}</td>
                   <td>
-                    {isAdmin && m.id !== user.id ? (
+                    {isAdmin && m.id !== user.id && !m.disabled_at ? (
                       <form action={setRole.bind(null, m.id)} className="row">
                         <select name="role" defaultValue={m.role} style={{ width: "auto" }}>
                           {Object.entries(ROLE).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
@@ -103,7 +110,25 @@ export default async function Org() {
                       </form>
                     ) : ROLE[m.role]}
                   </td>
-                  {isAdmin && <td>{m.id !== user.id && <form action={removeMember.bind(null, m.id)}><button className="btn danger small">Ta bort</button></form>}</td>}
+                  {isAdmin && (
+                    <td>
+                      {m.id !== user.id && (m.disabled_at ? (
+                        <form action={enableMember.bind(null, m.id)}><button className="btn secondary small">Aktivera</button></form>
+                      ) : (
+                        <div className="stack">
+                          <form action={removeMember.bind(null, m.id)}>
+                            <button className="btn danger small" title="Personen kan inte logga in. Loggade flygningar och briefingar sparas.">Inaktivera</button>
+                          </form>
+                          <details className="small">
+                            <summary>Nytt lösenord</summary>
+                            <StateForm action={resetMemberPassword.bind(null, m.id)} submit="Sätt" className="row">
+                              <input name="password" minLength={8} required placeholder="Tillfälligt lösenord" style={{ width: 170 }} />
+                            </StateForm>
+                          </details>
+                        </div>
+                      ))}
+                    </td>
+                  )}
                 </tr>
               ))}
             </tbody>
@@ -124,6 +149,31 @@ export default async function Org() {
             </div>
           </StateForm>
         )}
+      </div>
+
+      <div className="card" style={{ marginTop: 16 }}>
+        <h2>Drönarkort</h2>
+        <p className="small muted" style={{ marginTop: 0 }}>Piloternas kompetensbevis. Utgångna eller snart utgående kort visas först.</p>
+        <div className="table-wrap">
+          <table>
+            <thead><tr><th>Pilot</th><th>Behörigheter</th><th>Giltigt till</th><th>Status</th></tr></thead>
+            <tbody>
+              {licenses.map(({ m, st }) => (
+                <tr key={m.id}>
+                  <td>{m.name}</td>
+                  <td className="small">{(JSON.parse(m.license_classes || "[]") as string[]).join(", ") || "–"}</td>
+                  <td>{m.license_expiry ? fmtDate(m.license_expiry) : "–"}</td>
+                  <td>
+                    {st.level === "none" ? <span className="badge b-muted">Ej angivet</span>
+                      : st.level === "expired" ? <span className="badge b-danger">Utgånget</span>
+                      : st.level === "soon" ? <span className="badge b-warn">{st.daysLeft} dagar kvar</span>
+                      : <span className="badge b-ok">Giltigt</span>}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       </div>
 
       <div className="grid g2" style={{ marginTop: 16, alignItems: "start" }}>

@@ -1,18 +1,22 @@
 "use client";
 
+import Link from "next/link";
 import { useState, useTransition } from "react";
 import { saveRun } from "@/app/(app)/checklists/actions";
+import { queueRun } from "./PendingRunsSync";
 
 export function ChecklistRunner({
   id,
   items,
   drones,
   defaultDrone,
+  briefingId = null,
 }: {
   id: string;
   items: string[];
   drones: { id: string; name: string }[];
   defaultDrone: string | null;
+  briefingId?: string | null;
 }) {
   const [checked, setChecked] = useState<Set<number>>(new Set());
   const [drone, setDrone] = useState(defaultDrone ?? "");
@@ -21,7 +25,8 @@ export function ChecklistRunner({
   const toggle = (i: number) =>
     setChecked((s) => {
       const n = new Set(s);
-      n.has(i) ? n.delete(i) : n.add(i);
+      if (n.has(i)) n.delete(i);
+      else n.add(i);
       return n;
     });
   const done = checked.size === items.length && items.length > 0;
@@ -51,8 +56,15 @@ export function ChecklistRunner({
           disabled={pending || checked.size === 0}
           onClick={() =>
             start(async () => {
-              await saveRun(id, drone || null, [...checked].sort((a, b) => a - b));
-              setSaved(done ? "Checklistan är klar och sparad." : "Delvis genomförd checklista sparad.");
+              const run = { checklistId: id, droneId: drone || null, checked: [...checked].sort((a, b) => a - b), briefingId };
+              try {
+                await saveRun(run.checklistId, run.droneId, run.checked, run.briefingId);
+                setSaved(done ? "Checklistan är klar och sparad." : "Delvis genomförd checklista sparad.");
+              } catch {
+                // offline i fält: spara lokalt och skicka när nätet är tillbaka
+                queueRun(run);
+                setSaved("Ingen anslutning – genomgången sparas lokalt och skickas automatiskt när du är online igen.");
+              }
               setChecked(new Set());
             })
           }
@@ -62,6 +74,12 @@ export function ChecklistRunner({
         <button type="button" className="btn secondary" onClick={() => setChecked(new Set(items.map((_, i) => i)))}>Bocka alla</button>
         {saved && <span className="small" style={{ color: "var(--ok)" }}>{saved}</span>}
       </div>
+      {saved && briefingId && (
+        <div className="row">
+          <Link className="btn secondary small" href={`/logbook/new?briefing=${briefingId}`}>Logga flygningen</Link>
+          <Link className="btn secondary small" href={`/briefings/${briefingId}`}>Tillbaka till briefingen</Link>
+        </div>
+      )}
     </div>
   );
 }

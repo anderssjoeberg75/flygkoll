@@ -5,12 +5,15 @@ import type { Feature, FeatureCollection, Geometry, Polygon, MultiPolygon } from
 import fs from "node:fs/promises";
 import path from "node:path";
 import crypto from "node:crypto";
+import { LruCache } from "./lru";
 
-const UA = "Flygkoll/0.1 (personal drone briefing)";
+// Nominatim kräver identifierbar User-Agent; sätt FLYGKOLL_CONTACT till e-post eller URL för din instans
+const UA = `Flygkoll/0.1 (self-hosted drone briefing${process.env.FLYGKOLL_CONTACT ? `; ${process.env.FLYGKOLL_CONTACT}` : ""})`;
 
 /* ---------- fetch helpers ---------- */
 
-const cache = new Map<string, { at: number; data: unknown }>();
+// begränsad cache: nycklar innehåller koordinater och skulle annars växa så länge processen lever
+const cache = new LruCache<unknown>(400);
 
 async function fetchWithTimeout(url: string, ms = 15000, init: RequestInit = {}, retries = 1): Promise<Response> {
   const ctrl = new AbortController();
@@ -61,20 +64,31 @@ export function within<T>(p: Promise<T>, ms: number, msg: string): Promise<T> {
   return Promise.race([p, new Promise<T>((_, rej) => setTimeout(() => rej(new Error(msg)), ms))]);
 }
 
-async function cachedJson<T>(url: string, ttlMs: number, timeoutMs = 15000): Promise<T> {
-  const hit = cache.get(url);
-  if (hit && Date.now() - hit.at < ttlMs) return hit.data as T;
-  const data = (await (await fetchWithTimeout(url, timeoutMs)).json()) as T;
-  cache.set(url, { at: Date.now(), data });
-  return data;
+const inflightMem = new Map<string, Promise<unknown>>();
+
+/** Hämtar och cachar ett värde; samtidiga anrop med samma nyckel delar på en hämtning. */
+async function memo<T>(key: string, ttlMs: number, load: () => Promise<T>): Promise<T> {
+  const hit = cache.get(key, ttlMs);
+  if (hit !== undefined) return hit as T;
+  let p = inflightMem.get(key) as Promise<T> | undefined;
+  if (!p) {
+    p = load()
+      .then((v) => {
+        cache.set(key, v);
+        return v;
+      })
+      .finally(() => inflightMem.delete(key));
+    inflightMem.set(key, p);
+  }
+  return p;
+}
+
+async function cachedJson<T>(url: string, ttlMs: number, timeoutMs = 15000, init: RequestInit = {}): Promise<T> {
+  return memo(url, ttlMs, async () => (await (await fetchWithTimeout(url, timeoutMs, init)).json()) as T);
 }
 
 async function cachedText(url: string, ttlMs: number): Promise<string> {
-  const hit = cache.get(url);
-  if (hit && Date.now() - hit.at < ttlMs) return hit.data as string;
-  const data = await (await fetchWithTimeout(url, 30000)).text();
-  cache.set(url, { at: Date.now(), data });
-  return data;
+  return memo(url, ttlMs, async () => (await fetchWithTimeout(url, 30000)).text());
 }
 
 const HOUR = 3600e3;
@@ -124,8 +138,14 @@ type Ed318Feature = {
   };
 };
 
-export async function uasZones(): Promise<FeatureCollection> {
-  const raw = await cachedJson<{ features: Ed318Feature[] }>("https://daim.lfv.se/echarts/dronechart/data/uas_zones_ED318.json", 6 * HOUR);
+const UAS_URL = "https://daim.lfv.se/echarts/dronechart/data/uas_zones_ED318.json";
+
+/** UAS-zoner som GeoJSON. Det bearbetade resultatet cachas, så cirklarna byggs bara när rådatan hämtas om. */
+export function uasZones(): Promise<FeatureCollection> {
+  return memo("uasZones:processed", 6 * HOUR, async () => convertUasZones(await (await fetchWithTimeout(UAS_URL, 15000)).json()));
+}
+
+export function convertUasZones(raw: { features?: Ed318Feature[] }): FeatureCollection {
   const features: Feature[] = [];
   for (const f of raw.features || []) {
     const g = f.geometry;
@@ -287,19 +307,25 @@ export async function natura2000(bbox: [number, number, number, number]) {
 
 /* ---------- Kp-index (NOAA SWPC 3-dygnsprognos) ---------- */
 
-export async function kpForecast(at: Date) {
+/** Högsta Kp i de 3-timmarsblock som överlappar [from, to]. */
+export async function kpForecast(from: Date, to: Date = from) {
   const j = await cachedJson<{ time_tag: string; kp: number; observed: string }[] | (string | number)[][]>(
     "https://services.swpc.noaa.gov/products/noaa-planetary-k-index-forecast.json",
     HOUR
   );
   const rows = (Array.isArray(j[0]) ? (j as (string | number)[][]).slice(1).map((r) => ({ time_tag: String(r[0]), kp: Number(r[1]), observed: String(r[2]) })) : (j as { time_tag: string; kp: number; observed: string }[]));
-  const t = at.getTime();
-  let best: (typeof rows)[number] | null = null;
+  return maxKpInWindow(rows, from, to);
+}
+
+export function maxKpInWindow(rows: { time_tag: string; kp: number; observed: string }[], from: Date, to: Date) {
+  const a = from.getTime(), b = Math.max(a, to.getTime());
+  let best: { kp: number; kind: string; at: string } | null = null;
   for (const r of rows) {
     const rt = new Date(r.time_tag.endsWith("Z") ? r.time_tag : r.time_tag.replace(" ", "T") + "Z").getTime();
-    if (rt <= t && t < rt + 3 * HOUR) best = r;
+    const overlaps = rt <= b && a < rt + 3 * HOUR;
+    if (overlaps && Number.isFinite(r.kp) && (!best || r.kp > best.kp)) best = { kp: r.kp, kind: r.observed, at: new Date(Math.max(rt, a)).toISOString() };
   }
-  return best ? { kp: best.kp, kind: best.observed } : null;
+  return best;
 }
 
 /* ---------- GPS-störning (GPSJam, ADS-B-baserad, H3 res 4) ---------- */
@@ -309,34 +335,69 @@ export async function gpsInterference(lat: number, lon: number) {
   const dates = manifest.trim().split("\n").slice(1).map((l) => l.split(",")[0]).filter(Boolean).sort();
   const last = dates[dates.length - 1];
   if (!last) throw new Error("Tom manifest");
-  const csv = await cachedText(`https://gpsjam.org/data/${last}-h3_4.csv`, 12 * HOUR);
+  // tolka CSV:n en gång per fil till cell → [bra, dåliga] i stället för vid varje briefing
+  const cells = await memo(`gpsjam:${last}`, 12 * HOUR, async () => parseGpsJam(await (await fetchWithTimeout(`https://gpsjam.org/data/${last}-h3_4.csv`, 30000)).text()));
   const cell = latLngToCell(lat, lon, 4);
-  const near = new Set(gridDisk(cell, 1));
   let good = 0, bad = 0, ownPct: number | null = null;
-  for (const line of csv.split("\n")) {
-    const [hex, g, b] = line.split(",");
-    if (!near.has(hex)) continue;
-    good += +g;
-    bad += +b;
-    if (hex === cell) ownPct = (+b / Math.max(1, +g + +b)) * 100;
+  for (const hex of gridDisk(cell, 1)) {
+    const v = cells.get(hex);
+    if (!v) continue;
+    good += v[0];
+    bad += v[1];
+    if (hex === cell) ownPct = (v[1] / Math.max(1, v[0] + v[1])) * 100;
   }
   const pct = (bad / Math.max(1, good + bad)) * 100;
   const level = good + bad < 3 ? "okänd" : pct > 10 ? "hög" : pct >= 2 ? "medel" : "låg";
   return { date: last, pct: Math.round(pct * 10) / 10, ownPct, aircraft: good + bad, level };
 }
 
+export function parseGpsJam(csv: string): Map<string, [number, number]> {
+  const out = new Map<string, [number, number]>();
+  for (const line of csv.split("\n")) {
+    const [hex, g, b] = line.split(",");
+    const good = Number(g), bad = Number(b);
+    if (!hex || !Number.isFinite(good) || !Number.isFinite(bad)) continue;
+    out.set(hex.trim(), [good, bad]);
+  }
+  return out;
+}
+
 /* ---------- Geokodning (OSM Nominatim) ---------- */
 
+// Nominatims användarpolicy: högst ett anrop per sekund. Alla anrop köas och sprids ut.
+const NOMINATIM_GAP_MS = 1100;
+const NOMINATIM_MAX_QUEUE = 20;
+let nominatimChain: Promise<unknown> = Promise.resolve();
+let nominatimLast = 0;
+let nominatimQueued = 0;
+
+function nominatim<T>(url: string): Promise<T> {
+  return memo(url, 24 * HOUR, () => {
+    if (nominatimQueued >= NOMINATIM_MAX_QUEUE) return Promise.reject(new Error("Platssökningen är upptagen – försök igen om en stund."));
+    nominatimQueued++;
+    const run = nominatimChain.then(async () => {
+      const wait = nominatimLast + NOMINATIM_GAP_MS - Date.now();
+      if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+      nominatimLast = Date.now();
+      return (await (await fetchWithTimeout(url, 10000, {}, 0)).json()) as T;
+    });
+    const settled = run.finally(() => nominatimQueued--);
+    nominatimChain = settled.catch(() => undefined);
+    return settled;
+  });
+}
+
 export async function reverseGeocode(lat: number, lon: number): Promise<string> {
-  const j = await cachedJson<{ address?: Record<string, string>; display_name?: string }>(
-    `https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lon}&zoom=12&accept-language=sv`,
-    24 * HOUR
+  // avrunda (~10 m) så att närliggande briefingar delar cache och inte belastar Nominatim
+  const j = await nominatim<{ address?: Record<string, string>; display_name?: string }>(
+    `https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat.toFixed(4)}&lon=${lon.toFixed(4)}&zoom=12&accept-language=sv`
   );
   const a = j.address || {};
   return a.city || a.town || a.village || a.municipality || a.county || j.display_name?.split(",")[0] || `${lat.toFixed(3)}, ${lon.toFixed(3)}`;
 }
 
 export async function searchPlace(q: string) {
-  const p = new URLSearchParams({ q, format: "json", countrycodes: "se", limit: "6", "accept-language": "sv" });
-  return cachedJson<{ display_name: string; lat: string; lon: string }[]>(`https://nominatim.openstreetmap.org/search?${p}`, 24 * HOUR);
+  const query = q.trim().replace(/\s+/g, " ").slice(0, 200);
+  const p = new URLSearchParams({ q: query, format: "json", countrycodes: "se", limit: "6", "accept-language": "sv" });
+  return nominatim<{ display_name: string; lat: string; lon: string }[]>(`https://nominatim.openstreetmap.org/search?${p}`);
 }

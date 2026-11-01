@@ -19,6 +19,28 @@ Därefter är registreringen stängd; lägg till fler användare under **Organis
 
 All data ligger i SQLite-filen `data/flygkoll.db` (ändra med `FLYGKOLL_DB=/sökväg/fil.db`).
 Långsamma kartdata från Naturvårdsverket cachas i `data/cache/` i 7 dagar.
+Databasschemat uppdateras automatiskt vid start (versionerade migreringar via `PRAGMA user_version`).
+
+### Miljövariabler
+
+| Variabel | Betydelse |
+|---|---|
+| `FLYGKOLL_DB` | Sökväg till SQLite-filen (standard `data/flygkoll.db`) |
+| `FLYGKOLL_OPEN_SIGNUP=1` | Öppen registrering – varje ny användare får en egen organisation |
+| `FLYGKOLL_INSECURE_COOKIE=1` | Sessionskaka utan `Secure` (bara för LAN utan HTTPS) |
+| `FLYGKOLL_CONTACT` | E-post eller URL som skickas i User-Agent till Nominatim (rekommenderas av OSM) |
+
+### Säkerhetskopiering
+
+Databasen körs i WAL-läge, så en vanlig filkopia av `flygkoll.db` medan appen kör kan bli inkonsekvent.
+Använd SQLite:s backup-kommando, t.ex. dagligen från cron:
+
+```bash
+sqlite3 /opt/flygkoll/data/flygkoll.db ".backup '/var/backups/flygkoll-$(date +%F).db'"
+```
+
+Vill du ha kontinuerlig replikering till t.ex. S3 fungerar [Litestream](https://litestream.io) bra med samma fil.
+`data/cache/` behöver inte säkerhetskopieras.
 
 ### Köra på servern (Ubuntu, systemd)
 
@@ -40,7 +62,19 @@ WantedBy=multi-user.target
 ```
 
 Kör bakom en reverse proxy med HTTPS (Caddy/nginx). Sessionskakan sätts som `Secure` i produktion;
-kör du utan HTTPS på ditt LAN, sätt `FLYGKOLL_INSECURE_COOKIE=1`.
+kör du utan HTTPS på ditt LAN, sätt `FLYGKOLL_INSECURE_COOKIE=1`. Proxyn ska sätta `X-Forwarded-For`
+– den används för att begränsa antalet inloggningsförsök per IP-adress.
+
+## Utveckling
+
+```bash
+npm run dev        # utvecklingsserver
+npm run typecheck  # TypeScript
+npm run lint       # ESLint
+npm test           # Vitest
+```
+
+GitHub Actions kör samtliga plus `next build` för varje pull request.
 
 ## Datakällor (hämtas server-side, parallellt)
 
@@ -66,7 +100,9 @@ För eget bruk är det samma data som Drönarkartan visar.
 
 ## Funktioner
 
-- **Briefing**: plats via karta/sök/position/standardzon, radie 100 m–10 km, start + flygfönster, drönare.
+- **Briefing**: status *Ofullständig data* om någon LFV-källa inte svarar; åska, sikt, kyla, vind och Kp bedöms över
+  hela flygfönstret; naturvårdsdata som laddas långsamt kompletteras automatiskt; varning om drönarkortet saknas eller gått ut.
+  Plats via karta/sök/position/standardzon, radie 100 m–10 km, start + flygfönster, drönare.
   Status (OK / Försiktighet / Tillstånd krävs), max flyghöjd, vind mot egna gul/röd-gränser, molnbas,
   sol, driftmeddelanden, SMHI-varningar, berörda områden med regler, NOTAM, vindprofil, 24 h prognos,
   datakällstatus, KML-export, PDF (utskrift), dela inom org, uppdatera/ny nu, spara som standardzon.
@@ -77,7 +113,13 @@ För eget bruk är det samma data som Drönarkartan visar.
 - **Flotta**: drönare med klass/MTOM, serviceintervall i dagar och/eller flygtimmar, arbetstyper,
   underhållshistorik, flygningar per luftfartyg.
 - **Checklistor**: före/efter flygning och daglig kontroll, redigerbara, drönarspecifika, sparade genomgångar.
-- **Organisation**: medlemmar och roller, logotyp, vindgränser, standardzoner, statistik.
+- **Organisation**: medlemmar och roller, logotyp, vindgränser, standardzoner, statistik, översikt över drönarkort.
+  Roller: *Administratör* (allt), *Pilot* (skapa och ändra briefingar, flygningar, flotta), *Läsare* (bara läsa).
+  Medlemmar inaktiveras i stället för att raderas, så loggboken finns kvar. Nya medlemmar får ett tillfälligt
+  lösenord som de måste byta vid första inloggningen.
+- **Flöde inför flygning**: briefing → checklista före flygning → loggad flygning, kopplade till varandra.
+- **Offline (PWA)**: installera appen på mobilen. Briefingar, checklistor och flygningar som du har öppnat går att
+  läsa utan täckning, och checklistgenomgångar som görs offline skickas när nätet är tillbaka.
 - **Regelguide** (öppen/specifik kategori) och **VLOS/BVLOS-kalkylator**.
 
 ## Inte med (än)

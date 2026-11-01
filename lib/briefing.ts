@@ -18,6 +18,7 @@ import {
   type SmhiPoint,
 } from "./sources";
 import { droneRules, type DroneLike } from "./rules";
+import { fmtTime } from "./format";
 
 export type Severity = "permission" | "caution" | "info";
 export type AreaHit = {
@@ -31,7 +32,8 @@ export type AreaHit = {
   rule: string;
   props: Record<string, unknown>;
 };
-export type SourceStatus = { key: string; label: string; group: "LFV" | "Övrigt"; ok: boolean; error?: string; count?: number };
+export type SourceStatus = { key: string; label: string; group: "LFV" | "Övrigt"; ok: boolean; error?: string; count?: number; pending?: boolean };
+export type BriefingStatus = "OK" | "CAUTION" | "PERMISSION" | "INCOMPLETE";
 
 export type BriefingResult = {
   version: 1;
@@ -41,7 +43,8 @@ export type BriefingResult = {
   from: string;
   to: string;
   generatedAt: string;
-  status: "OK" | "CAUTION" | "PERMISSION";
+  /** INCOMPLETE = någon LFV-källa saknas, så luftrumsbilden kan vara ofullständig. */
+  status: BriefingStatus;
   maxHeight: { m: number; reason: string };
   hits: AreaHit[];
   notams: { id: string; text: string; from: string; to: string; location: string; distanceKm: number | null; isArea: boolean }[];
@@ -52,7 +55,7 @@ export type BriefingResult = {
   };
   warnings: Awaited<ReturnType<typeof smhiWarnings>>;
   sun: { sunrise: string | null; sunset: string | null; dawn: string | null; dusk: string | null };
-  kp: { kp: number; kind: string } | null;
+  kp: { kp: number; kind: string; at?: string } | null;
   gnss: Awaited<ReturnType<typeof gpsInterference>> | null;
   notices: { level: "info" | "warn" | "danger"; title: string; text: string }[];
   drone: (DroneLike & { id: string }) | null;
@@ -125,10 +128,172 @@ async function settle<T>(sources: SourceStatus[], key: string, label: string, gr
     sources.push({ key, label, group, ok: true, count });
     return r;
   } catch (e) {
-    sources.push({ key, label, group, ok: false, error: e instanceof Error ? e.message : String(e) });
+    sources.push({ key, label, group, ok: false, error: e instanceof Error ? e.message : String(e), pending: e instanceof PendingError || undefined });
     return null;
   }
 }
+
+/** Källan hämtas fortfarande i bakgrunden (diskcache fylls) – kan kompletteras senare. */
+export class PendingError extends Error {}
+const PENDING_MSG = "Stort område – laddas i bakgrunden. Briefingen kompletteras automatiskt.";
+
+/** Strängaste av områdesträffar och saknade LFV-källor. */
+export function computeStatus(hits: Pick<AreaHit, "severity">[], sources: SourceStatus[]): BriefingStatus {
+  const worst = hits.reduce((m, h) => Math.max(m, SEV_RANK[h.severity]), 0);
+  if (worst === 2) return "PERMISSION";
+  if (sources.some((s) => s.group === "LFV" && !s.ok)) return "INCOMPLETE";
+  return worst === 1 ? "CAUTION" : "OK";
+}
+
+const SEV_RANK: Record<Severity, number> = { permission: 2, caution: 1, info: 0 };
+
+/** Sammanfattning av vädret över hela flygfönstret [from, to] (inte bara starttiden). */
+export function windowWeather(rows: WeatherRow[], from: Date, to: Date) {
+  const a = from.getTime() - 30 * 60e3, b = to.getTime() + 30 * 60e3;
+  const win = rows.filter((r) => {
+    const t = new Date(r.time).getTime();
+    return t >= a && t <= b;
+  });
+  const pick = (key: keyof WeatherRow, cmp: (x: number, y: number) => boolean) => {
+    let best: { v: number; time: string } | null = null;
+    for (const r of win) {
+      const v = r[key];
+      if (typeof v !== "number") continue;
+      if (!best || cmp(v, best.v)) best = { v, time: r.time };
+    }
+    return best;
+  };
+  return {
+    rows: win,
+    maxThunder: pick("thunder", (x, y) => x > y),
+    minVis: pick("vis", (x, y) => x < y),
+    minTemp: pick("temp", (x, y) => x < y),
+    maxWind: pick("wind", (x, y) => x > y),
+    maxGust: pick("gust", (x, y) => x > y),
+  };
+}
+
+type Classify = (p: Record<string, unknown>) => { severity: Severity; rule: string; relevant?: boolean; lower?: string; upper?: string; validity?: string; name?: string };
+
+/** Operationsområde och kartutsnitt för en plats. */
+function areaContext(lat: number, lon: number, radius_m: number) {
+  const center = turf.point([lon, lat]);
+  const opArea = turf.circle(center, radius_m / 1000, { steps: 64, units: "kilometers" });
+  const viewBbox = turf.bbox(turf.buffer(opArea, 8, { units: "kilometers" })!) as [number, number, number, number];
+  return { center, opArea, viewBbox };
+}
+
+/** Skapar en funktion som klassar ett lager och lägger träffar/kartobjekt i hits och mapFeatures. */
+function makeConsider(opArea: Feature<Polygon>, viewBbox: [number, number, number, number], hits: AreaHit[], mapFeatures: Feature[]) {
+  const [vMinX, vMinY, vMaxX, vMaxY] = viewBbox;
+  const inView = (f: Feature) => {
+    try {
+      const [a, b, c, d] = turf.bbox(f);
+      return !(c < vMinX || a > vMaxX || d < vMinY || b > vMaxY);
+    } catch {
+      return false;
+    }
+  };
+  /** Klipp mot kartutsnittet och förenkla (~20 m) så att stora naturområden inte blir megabyte-stora. */
+  const forMap = (f: Feature): Geometry => {
+    const g = f.geometry as Geometry;
+    if (g.type !== "Polygon" && g.type !== "MultiPolygon") return g;
+    try {
+      const clipped = turf.bboxClip(f as Feature<Polygon | MultiPolygon>, viewBbox);
+      return turf.simplify(clipped, { tolerance: 0.0002, highQuality: false }).geometry as Geometry;
+    } catch {
+      return g;
+    }
+  };
+  const touches = (f: Feature) => {
+    try {
+      return turf.booleanIntersects(opArea, f as Feature<Geometry>);
+    } catch {
+      return false;
+    }
+  };
+  return function consider(fc: FeatureCollection | Feature[] | null, layer: string, classify: Classify) {
+    const feats = fc ? (Array.isArray(fc) ? fc : fc.features) : [];
+    for (const f of feats) {
+      if (!f.geometry || !inView(f)) continue;
+      const p = (f.properties || {}) as Record<string, unknown>;
+      const c = classify(p);
+      if (c.relevant === false) continue;
+      const name = c.name || pickName(p, LAYER_LABEL[layer]);
+      mapFeatures.push({ type: "Feature", geometry: forMap(f), properties: { layer, name, severity: c.severity, lower: c.lower, upper: c.upper } });
+      if (touches(f)) {
+        hits.push({ layer, layerLabel: LAYER_LABEL[layer], name, severity: c.severity, lower: c.lower, upper: c.upper, validity: c.validity, rule: c.rule, props: trimProps(p) });
+      }
+    }
+  };
+}
+
+const NATURE_LAYERS = new Set(["NR", "NP", "N2000"]);
+
+/** Naturvårdsregistret och Natura 2000. Används både vid generering och vid senare komplettering. */
+function considerNature(consider: ReturnType<typeof makeConsider>, nr: Feature[] | null, n2k: Feature[] | null, hits: AreaHit[], mapFeatures: Feature[]) {
+  consider(nr, "NR", (p) => {
+    const kind = str(p.kind);
+    const np = /nationalpark/i.test(kind);
+    return {
+      severity: np ? "permission" : "caution",
+      name: `${str(p.name)} (${kind})`,
+      rule: np
+        ? "Nationalpark – drönarflygning är ofta förbjuden enligt föreskrifterna. Kontrollera och sök dispens hos förvaltaren."
+        : "Skyddat område – kontrollera föreskrifterna. Vissa reservat förbjuder drönare; dispens söks hos Länsstyrelsen/kommunen.",
+    };
+  });
+  // nationalparker ritas som eget lager
+  for (const f of mapFeatures) if (f.properties?.layer === "NR" && /nationalpark/i.test(str(f.properties?.name))) f.properties!.layer = "NP";
+  for (const h of hits) if (h.layer === "NR" && /nationalpark/i.test(h.name)) {
+    h.layer = "NP";
+    h.layerLabel = LAYER_LABEL.NP;
+  }
+  consider(n2k, "N2000", (p) => ({
+    severity: "info",
+    name: `${str(p.name)} (${str(p.code)})`,
+    rule: "Natura 2000-område. Undvik störning av känsliga arter, särskilt under häckningstid.",
+  }));
+}
+
+const sortHits = (hits: AreaHit[]) => hits.sort((a, b) => SEV_RANK[b.severity] - SEV_RANK[a.severity]);
+
+function natureWithin<T>(p: Promise<T>, ms: number): Promise<T> {
+  return within(p, ms, PENDING_MSG).catch((e) => {
+    throw e instanceof Error && e.message === PENDING_MSG ? new PendingError(PENDING_MSG) : e;
+  });
+}
+
+/**
+ * Försöker komplettera naturvårdslager som inte hann laddas när briefingen skapades.
+ * Returnerar uppdaterat resultat, eller null om data fortfarande inte är klart.
+ */
+export async function completeNature(r: BriefingResult, waitMs = 3000): Promise<BriefingResult | null> {
+  const pendingKeys = r.sources.filter((s) => (s.key === "nr" || s.key === "n2k") && !s.ok).map((s) => s.key);
+  if (pendingKeys.length === 0) return null;
+  const { opArea, viewBbox } = areaContext(r.center[1], r.center[0], r.radius_m);
+  const sources: SourceStatus[] = [];
+  const [nr, n2k] = await Promise.all([
+    settle(sources, "nr", "Naturvårdsregistret", "Övrigt", () => natureWithin(protectedAreas(viewBbox), waitMs)),
+    settle(sources, "n2k", "Natura 2000", "Övrigt", () => natureWithin(natura2000(viewBbox), waitMs)),
+  ]);
+  if (sources.some((s) => pendingKeys.includes(s.key) && !s.ok)) return null;
+  const hits = r.hits.filter((h) => !NATURE_LAYERS.has(h.layer));
+  const mapFeatures = r.map.features.filter((f) => !NATURE_LAYERS.has(str(f.properties?.layer)));
+  considerNature(makeConsider(opArea, viewBbox, hits, mapFeatures), nr, n2k, hits, mapFeatures);
+  sortHits(hits);
+  const newSources = r.sources.map((s) => sources.find((x) => x.key === s.key) ?? s);
+  return {
+    ...r,
+    hits,
+    map: { type: "FeatureCollection", features: mapFeatures },
+    sources: newSources,
+    status: computeStatus(hits, newSources),
+    notices: r.notices.filter((n) => n.title !== NATURE_PENDING_TITLE),
+  };
+}
+
+const NATURE_PENDING_TITLE = "Skyddade områden laddas";
 
 function nearest(points: SmhiPoint[], t: Date) {
   let best: SmhiPoint | null = null;
@@ -175,9 +340,7 @@ export async function buildBriefing(opts: {
   const { lat, lon, radius_m, flightTime, durationH } = opts;
   const from = flightTime;
   const to = new Date(flightTime.getTime() + durationH * 3600e3);
-  const center = turf.point([lon, lat]);
-  const opArea = turf.circle(center, radius_m / 1000, { steps: 64, units: "kilometers" });
-  const viewBbox = turf.bbox(turf.buffer(opArea, 8, { units: "kilometers" })!) as [number, number, number, number];
+  const { center, opArea, viewBbox } = areaContext(lat, lon, radius_m);
   const sources: SourceStatus[] = [];
   const iso = (d: Date) => d.toISOString().replace(/\.\d+Z$/, ".000Z");
 
@@ -199,62 +362,16 @@ export async function buildBriefing(opts: {
     settle(sources, "smhi", "SMHI prognos", "Övrigt", () => smhiForecast(lat, lon)),
     settle(sources, "warnings", "SMHI vädervarningar", "Övrigt", () => smhiWarnings(lat, lon, from, new Date(to.getTime() + 6 * 3600e3))),
     settle(sources, "wind", "Vindprofil (Open-Meteo)", "Övrigt", () => windProfile(lat, lon)),
-    settle(sources, "nr", "Naturvårdsregistret", "Övrigt", () => within(protectedAreas(viewBbox), 12000, "Stort område – laddas i bakgrunden. Uppdatera briefingen om en minut.")),
-    settle(sources, "n2k", "Natura 2000", "Övrigt", () => within(natura2000(viewBbox), 12000, "Stort område – laddas i bakgrunden. Uppdatera briefingen om en minut.")),
-    settle(sources, "kp", "Kp-index (NOAA SWPC)", "Övrigt", () => kpForecast(from)),
+    settle(sources, "nr", "Naturvårdsregistret", "Övrigt", () => natureWithin(protectedAreas(viewBbox), 12000)),
+    settle(sources, "n2k", "Natura 2000", "Övrigt", () => natureWithin(natura2000(viewBbox), 12000)),
+    settle(sources, "kp", "Kp-index (NOAA SWPC)", "Övrigt", () => kpForecast(from, to)),
     settle(sources, "gnss", "GPS-störning (GPSJam)", "Övrigt", () => gpsInterference(lat, lon)),
     reverseGeocode(lat, lon).catch(() => `${lat.toFixed(4)}, ${lon.toFixed(4)}`),
   ]);
 
   const hits: AreaHit[] = [];
   const mapFeatures: Feature[] = [];
-  const [vMinX, vMinY, vMaxX, vMaxY] = viewBbox;
-
-  const inView = (f: Feature) => {
-    try {
-      const [a, b, c, d] = turf.bbox(f);
-      return !(c < vMinX || a > vMaxX || d < vMinY || b > vMaxY);
-    } catch {
-      return false;
-    }
-  };
-  /** Klipp mot kartutsnittet och förenkla (~20 m) så att stora naturområden inte blir megabyte-stora. */
-  const forMap = (f: Feature): Geometry => {
-    const g = f.geometry as Geometry;
-    if (g.type !== "Polygon" && g.type !== "MultiPolygon") return g;
-    try {
-      const clipped = turf.bboxClip(f as Feature<Polygon | MultiPolygon>, viewBbox);
-      return turf.simplify(clipped, { tolerance: 0.0002, highQuality: false }).geometry as Geometry;
-    } catch {
-      return g;
-    }
-  };
-  const touches = (f: Feature) => {
-    try {
-      return turf.booleanIntersects(opArea, f as Feature<Geometry>);
-    } catch {
-      return false;
-    }
-  };
-
-  function consider(
-    fc: FeatureCollection | Feature[] | null,
-    layer: string,
-    classify: (p: Record<string, unknown>) => { severity: Severity; rule: string; relevant?: boolean; lower?: string; upper?: string; validity?: string; name?: string }
-  ) {
-    const feats = fc ? (Array.isArray(fc) ? fc : fc.features) : [];
-    for (const f of feats) {
-      if (!f.geometry || !inView(f)) continue;
-      const p = (f.properties || {}) as Record<string, unknown>;
-      const c = classify(p);
-      if (c.relevant === false) continue;
-      const name = c.name || pickName(p, LAYER_LABEL[layer]);
-      mapFeatures.push({ type: "Feature", geometry: forMap(f), properties: { layer, name, severity: c.severity, lower: c.lower, upper: c.upper } });
-      if (touches(f)) {
-        hits.push({ layer, layerLabel: LAYER_LABEL[layer], name, severity: c.severity, lower: c.lower, upper: c.upper, validity: c.validity, rule: c.rule, props: trimProps(p) });
-      }
-    }
-  }
+  const consider = makeConsider(opArea, viewBbox, hits, mapFeatures);
 
   const lowRelevant = (p: Record<string, unknown>) => lowerFt(p.LOWER) < 400; // 120 m ≈ 394 ft
 
@@ -344,34 +461,10 @@ export async function buildBriefing(opts: {
     return { severity, lower: str(p.lower), upper: str(p.upper), rule: str(p.message) || `Zontyp: ${t}` };
   });
 
-  consider(nr, "NR", (p) => {
-    const kind = str(p.kind);
-    const np = /nationalpark/i.test(kind);
-    return {
-      severity: np ? "permission" : "caution",
-      name: `${str(p.name)} (${kind})`,
-      rule: np
-        ? "Nationalpark – drönarflygning är ofta förbjuden enligt föreskrifterna. Kontrollera och sök dispens hos förvaltaren."
-        : "Skyddat område – kontrollera föreskrifterna. Vissa reservat förbjuder drönare; dispens söks hos Länsstyrelsen/kommunen.",
-    };
-  });
-  // nationalparker ritas som eget lager
-  for (const f of mapFeatures) if (f.properties?.layer === "NR" && /nationalpark/i.test(str(f.properties?.name))) f.properties!.layer = "NP";
-  for (const h of hits) if (h.layer === "NR" && /nationalpark/i.test(h.name)) {
-    h.layer = "NP";
-    h.layerLabel = LAYER_LABEL.NP;
-  }
+  considerNature(consider, nr, n2k, hits, mapFeatures);
 
-  consider(n2k, "N2000", (p) => ({
-    severity: "info",
-    name: `${str(p.name)} (${str(p.code)})`,
-    rule: "Natura 2000-område. Undvik störning av känsliga arter, särskilt under häckningstid.",
-  }));
-
-  const sevRank: Record<Severity, number> = { permission: 2, caution: 1, info: 0 };
-  hits.sort((a, b) => sevRank[b.severity] - sevRank[a.severity]);
-  const worst = hits.reduce((m, h) => Math.max(m, sevRank[h.severity]), 0);
-  const status: BriefingResult["status"] = worst === 2 ? "PERMISSION" : worst === 1 ? "CAUTION" : "OK";
+  sortHits(hits);
+  const status = computeStatus(hits, sources);
 
   let maxHeight = { m: 120, reason: "Öppen kategori" };
   if (hits.some((h) => ["CTR", "TIZ", "ATZ"].includes(h.layer))) maxHeight = { m: 50, reason: "Inom kontrollerat luftrum/TIZ utan tillstånd" };
@@ -399,17 +492,35 @@ export async function buildBriefing(opts: {
   const sun = { sunrise: safe(sc.sunrise), sunset: safe(sc.sunset), dawn: safe(sc.dawn), dusk: safe(sc.dusk) };
   const sunUpAt = (d: Date) => SunCalc.getPosition(d, lat, lon).altitude > -0.833 * (Math.PI / 180);
 
+  const ww = windowWeather(hoursAll, from, to);
   const notices: BriefingResult["notices"] = [];
+  const failedLfv = sources.filter((s) => s.group === "LFV" && !s.ok);
+  if (failedLfv.length) {
+    notices.push({
+      level: "danger",
+      title: "Luftrumsdata ofullständig",
+      text: `Följande källor från LFV kunde inte hämtas: ${failedLfv.map((s) => s.label).join(", ")}. Statusen kan inte bedömas säkert – uppdatera briefingen eller kontrollera Drönarkartan och NOTAM direkt.`,
+    });
+  }
+  if (sources.some((s) => s.pending)) {
+    notices.push({ level: "info", title: NATURE_PENDING_TITLE, text: "Naturvårdsverkets data för området hämtas fortfarande. Briefingen kompletteras automatiskt när den är klar." });
+  }
   const windNow = wp[0]?.w10 ?? atStart?.wind ?? null;
-  const windMax = Math.max(...wp.map((w) => Math.max(w.w120, w.gust)), atStart?.gust ?? 0);
+  // högsta vind/byar i hela fönstret – Open-Meteo-profilen och SMHI:s timvärden
+  const windMax = Math.max(0, ...wp.map((w) => Math.max(w.w120, w.gust)), atStart?.gust ?? 0, ww.maxGust?.v ?? 0, ww.maxWind?.v ?? 0);
   if (windNow === null) notices.push({ level: "info", title: "Vinddata saknas", text: "Prognos saknas för vald tid. Skapa briefingen närmare flygtillfället." });
   else if (windMax >= opts.windRed) notices.push({ level: "danger", title: "Hård vind", text: `Vind/byar upp till ${windMax.toFixed(1)} m/s i flygfönstret överstiger röd gräns (${opts.windRed} m/s).` });
   else if (windMax >= opts.windYellow) notices.push({ level: "warn", title: "Byig vind", text: `Vind/byar upp till ${windMax.toFixed(1)} m/s – över gul gräns (${opts.windYellow} m/s).` });
   if (!sunUpAt(from) || !sunUpAt(to)) notices.push({ level: "warn", title: "Mörkerflygning", text: "Delar av flygfönstret ligger utanför dagsljus. Grönt blinkande ljus krävs på drönaren i öppen kategori." });
-  if (atStart && atStart.vis !== null && atStart.vis < 3) notices.push({ level: "warn", title: "Nedsatt sikt", text: `Prognostiserad sikt ${atStart.vis} km. Säkerställ VLOS.` });
-  if (atStart && (atStart.thunder ?? 0) >= 20) notices.push({ level: "danger", title: "Åskrisk", text: `Åsksannolikhet ${atStart.thunder} %.` });
-  if (atStart && atStart.temp <= 0) notices.push({ level: "warn", title: "Kyla", text: "Minusgrader: förvärm batterierna och räkna med kortare flygtid. Se upp för isbildning." });
-  if (kp && kp.kp >= 5) notices.push({ level: "warn", title: `Geomagnetisk storm (Kp ${kp.kp})`, text: "Försämrad GNSS-noggrannhet möjlig. Var beredd att flyga i ATTI/manuellt." });
+  const at = (t: string) => ` (kl. ${fmtTime(t)})`;
+  // sikt, åska och kyla bedöms över hela flygfönstret, inte bara vid start
+  const minVis = ww.minVis ?? (atStart?.vis != null ? { v: atStart.vis, time: atStart.time } : null);
+  const maxThunder = ww.maxThunder ?? (atStart?.thunder != null ? { v: atStart.thunder, time: atStart.time } : null);
+  const minTemp = ww.minTemp ?? (atStart ? { v: atStart.temp, time: atStart.time } : null);
+  if (minVis && minVis.v < 3) notices.push({ level: "warn", title: "Nedsatt sikt", text: `Prognostiserad sikt ner till ${minVis.v} km${at(minVis.time)}. Säkerställ VLOS.` });
+  if (maxThunder && maxThunder.v >= 20) notices.push({ level: "danger", title: "Åskrisk", text: `Åsksannolikhet upp till ${maxThunder.v} %${at(maxThunder.time)} i flygfönstret.` });
+  if (minTemp && minTemp.v <= 0) notices.push({ level: "warn", title: "Kyla", text: `Ner till ${minTemp.v.toFixed(0)} °C${at(minTemp.time)}: förvärm batterierna och räkna med kortare flygtid. Se upp för isbildning.` });
+  if (kp && kp.kp >= 5) notices.push({ level: "warn", title: `Geomagnetisk storm (Kp ${kp.kp})`, text: `Försämrad GNSS-noggrannhet möjlig${kp.at ? at(kp.at) : ""}. Var beredd att flyga i ATTI/manuellt.` });
   if (gnss && (gnss.level === "hög" || gnss.level === "medel")) notices.push({ level: gnss.level === "hög" ? "danger" : "warn", title: "GPS-störning rapporterad", text: `${gnss.pct} % av flygplanen i området rapporterade dålig GNSS-kvalitet (${gnss.date}).` });
   if (notamList.some((n) => n.isArea)) notices.push({ level: "warn", title: "NOTAM-områden i närheten", text: "Det finns aktiva NOTAM-områden nära operationsområdet. Läs dem nedan." });
   notices.push({ level: "info", title: "Skyddsobjekt ingår inte", text: "Kontrollera alltid om det finns skyddsobjekt (t.ex. militära anläggningar) i området – drönarflygning där kräver tillstånd." });

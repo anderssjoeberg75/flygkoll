@@ -17,6 +17,7 @@ export const STATUS_LABEL: Record<string, { text: string; cls: string }> = {
   OK: { text: "OK", cls: "b-ok" },
   CAUTION: { text: "Försiktighet", cls: "b-warn" },
   PERMISSION: { text: "Tillstånd krävs", cls: "b-danger" },
+  INCOMPLETE: { text: "Ofullständig data", cls: "b-danger" },
 };
 
 export const SEVERITY_LABEL: Record<string, { text: string; cls: string }> = {
@@ -31,16 +32,27 @@ export function compass(deg: number | null | undefined) {
   return d[Math.round(((deg % 360) / 45)) % 8];
 }
 
-/** "2026-10-31T14:30" tolkat som svensk lokal tid → Date */
-export function parseLocalStockholm(s: string): Date {
-  const [d, t] = s.split("T");
-  const [y, mo, da] = d.split("-").map(Number);
-  const [h, mi] = (t || "00:00").split(":").map(Number);
-  const guess = Date.UTC(y, mo - 1, da, h, mi);
-  const parts = new Intl.DateTimeFormat("en-US", { timeZone: TZ, hourCycle: "h23", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }).formatToParts(new Date(guess));
+const offsetFmt = new Intl.DateTimeFormat("en-US", { timeZone: TZ, hourCycle: "h23", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
+
+/** Stockholms UTC-offset (ms) vid en given tidpunkt. */
+function stockholmOffset(ms: number): number {
+  const parts = offsetFmt.formatToParts(new Date(ms));
   const get = (k: string) => Number(parts.find((p) => p.type === k)?.value);
-  const asLocal = Date.UTC(get("year"), get("month") - 1, get("day"), get("hour"), get("minute"));
-  return new Date(guess - (asLocal - guess));
+  return Date.UTC(get("year"), get("month") - 1, get("day"), get("hour"), get("minute")) - Math.floor(ms / 60e3) * 60e3;
+}
+
+/**
+ * "2026-10-31T14:30" tolkat som svensk lokal tid → Date. Ogiltig indata ger ett ogiltigt Date (kastar inte).
+ * Offseten räknas om vid det framräknade ögonblicket, så tider natten då sommar-/vintertid börjar blir rätt.
+ */
+export function parseLocalStockholm(s: string): Date {
+  const m = /^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2}))?/.exec(String(s ?? "").trim());
+  if (!m) return new Date(NaN);
+  const [, y, mo, da, h = "00", mi = "00"] = m;
+  const wall = Date.UTC(+y, +mo - 1, +da, +h, +mi);
+  if (isNaN(wall)) return new Date(NaN);
+  const first = wall - stockholmOffset(wall);
+  return new Date(wall - stockholmOffset(first));
 }
 
 export function toLocalInput(d: Date) {

@@ -3,6 +3,8 @@ import { requireUser } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { dueMaintenance } from "@/lib/fleet";
 import { fmtDateTime, fmtMinutes, fmtDate, STATUS_LABEL } from "@/lib/format";
+import { licenseState } from "@/lib/rules";
+import { orgMembers } from "@/lib/members";
 
 export default async function Dashboard() {
   const user = await requireUser();
@@ -14,7 +16,15 @@ export default async function Dashboard() {
     .all(user.org_id, user.id) as { id: string; name: string; flight_time: string; status: string; radius_m: number }[];
   const due = dueMaintenance(user.org_id);
   const classes: string[] = JSON.parse(user.license_classes || "[]");
-  const daysLeft = user.license_expiry ? Math.round((new Date(user.license_expiry).getTime() - Date.now()) / 864e5) : null;
+  const lic = licenseState(user.license_expiry);
+  // admin ser även organisationens kort som gått ut eller snart går ut
+  const orgLicenseIssues =
+    user.role === "admin"
+      ? orgMembers(user.org_id)
+          .filter((m) => m.id !== user.id && m.role !== "viewer")
+          .map((m) => ({ m, st: licenseState(m.license_expiry) }))
+          .filter((x) => x.st.level === "expired" || x.st.level === "soon")
+      : [];
   const hour = Number(new Intl.DateTimeFormat("sv-SE", { timeZone: "Europe/Stockholm", hour: "numeric" }).format(new Date()));
   const greet = hour < 10 ? "God morgon" : hour < 18 ? "Hej" : "God kväll";
 
@@ -55,11 +65,27 @@ export default async function Dashboard() {
             <h2>Drönarkort</h2>
             {user.license_expiry ? (
               <>
-                <div className={`badge ${daysLeft !== null && daysLeft < 60 ? "b-warn" : "b-ok"}`}>Giltigt till {fmtDate(user.license_expiry)}</div>
-                <p className="small muted">{daysLeft} dagar kvar · {classes.join(", ") || "Inga behörigheter angivna"}</p>
+                <div className={`badge ${lic.level === "expired" ? "b-danger" : lic.level === "soon" ? "b-warn" : "b-ok"}`}>
+                  {lic.level === "expired" ? `Gick ut ${fmtDate(user.license_expiry)}` : `Giltigt till ${fmtDate(user.license_expiry)}`}
+                </div>
+                <p className="small muted">
+                  {lic.level === "expired" ? "Förnya kortet innan nästa flygning." : `${lic.daysLeft} dagar kvar`} · {classes.join(", ") || "Inga behörigheter angivna"}
+                </p>
+                {lic.level === "soon" && <p className="small" style={{ color: "var(--warn)" }}>Påminnelse: kortet går ut inom 60 dagar.</p>}
               </>
             ) : (
               <p className="small muted">Inget drönarkort angivet. <Link href="/settings">Lägg till</Link></p>
+            )}
+            {orgLicenseIssues.length > 0 && (
+              <div className="small" style={{ marginTop: 8 }}>
+                <strong>I organisationen:</strong>
+                <ul style={{ paddingLeft: 18, margin: "4px 0 0" }}>
+                  {orgLicenseIssues.map(({ m, st }) => (
+                    <li key={m.id}>{m.name}: <span className={`badge ${st.level === "expired" ? "b-danger" : "b-warn"}`}>{st.level === "expired" ? "utgånget" : `${st.daysLeft} dagar kvar`}</span></li>
+                  ))}
+                </ul>
+                <Link href="/org">Se alla kort</Link>
+              </div>
             )}
           </div>
           <div className="card">

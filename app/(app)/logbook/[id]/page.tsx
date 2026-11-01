@@ -31,6 +31,12 @@ export default async function FlightPage({ params }: { params: Promise<{ id: str
   const track = f.track ? (JSON.parse(f.track) as TrackPoint[]) : [];
   const t0 = track[0]?.t ?? 0;
   const canEdit = f.pilot_id === user.id || user.role === "admin";
+  const runs = db
+    .prepare(
+      `SELECT r.id, r.completed, r.created_at, c.id AS checklist_id, c.name FROM checklist_runs r JOIN checklists c ON c.id = r.checklist_id
+       WHERE r.flight_id = ? AND c.org_id = ? ORDER BY r.created_at`
+    )
+    .all(f.id, user.org_id) as { id: string; completed: number; created_at: string; checklist_id: string; name: string }[];
 
   return (
     <>
@@ -83,6 +89,19 @@ export default async function FlightPage({ params }: { params: Promise<{ id: str
           <h2>Anteckningar</h2>
           <p style={{ whiteSpace: "pre-wrap" }}>{f.notes || <span className="muted">–</span>}</p>
           {f.briefing_id && <Link href={`/briefings/${f.briefing_id}`} className="small">Visa briefingen</Link>}
+          {runs.length > 0 && (
+            <>
+              <h3>Checklistor</h3>
+              <ul className="small" style={{ paddingLeft: 18 }}>
+                {runs.map((x) => (
+                  <li key={x.id}>
+                    <Link href={`/checklists/${x.checklist_id}`}>{x.name}</Link> · {fmtDateTime(x.created_at.replace(" ", "T") + "Z")}{" "}
+                    <span className={`badge ${x.completed ? "b-ok" : "b-warn"}`}>{x.completed ? "Klar" : "Delvis"}</span>
+                  </li>
+                ))}
+              </ul>
+            </>
+          )}
         </div>
       </div>
     </>

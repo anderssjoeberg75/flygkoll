@@ -2,24 +2,26 @@
 
 import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
-import { requireUser } from "@/lib/auth";
+import { requireWriter } from "@/lib/auth";
 import { db, newId } from "@/lib/db";
 import { droneHours, getDrone } from "@/lib/fleet";
+import { CLASS_MARKS, oneOf, optNumber } from "@/lib/validate";
+import { parseLocalStockholm } from "@/lib/format";
 
 function droneVals(fd: FormData) {
   return {
-    name: String(fd.get("name") || "").trim() || "Namnlös drönare",
-    model: String(fd.get("model") || "").trim(),
-    serial: String(fd.get("serial") || "").trim(),
-    mtom_g: Math.round(Number(fd.get("mtom_g")) || 0),
-    class_mark: String(fd.get("class_mark") || "none"),
-    char_dim_m: Number(fd.get("char_dim_m")) || 0.35,
-    notes: String(fd.get("notes") || ""),
+    name: String(fd.get("name") || "").trim().slice(0, 200) || "Namnlös drönare",
+    model: String(fd.get("model") || "").trim().slice(0, 200),
+    serial: String(fd.get("serial") || "").trim().slice(0, 200),
+    mtom_g: Math.round(optNumber(fd.get("mtom_g"), 0, 1_000_000) ?? 0),
+    class_mark: oneOf(fd.get("class_mark"), CLASS_MARKS, "none"),
+    char_dim_m: optNumber(fd.get("char_dim_m"), 0.01, 50) ?? 0.35,
+    notes: String(fd.get("notes") || "").slice(0, 10_000),
   };
 }
 
 export async function addDrone(fd: FormData) {
-  const user = await requireUser();
+  const user = await requireWriter();
   const v = droneVals(fd);
   const id = newId();
   db.prepare("INSERT INTO drones (id, org_id, name, model, serial, mtom_g, class_mark, char_dim_m, notes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)").run(
@@ -30,7 +32,7 @@ export async function addDrone(fd: FormData) {
 }
 
 export async function updateDrone(id: string, fd: FormData) {
-  const user = await requireUser();
+  const user = await requireWriter();
   const v = droneVals(fd);
   db.prepare("UPDATE drones SET name=?, model=?, serial=?, mtom_g=?, class_mark=?, char_dim_m=?, notes=? WHERE id=? AND org_id=?").run(
     v.name, v.model, v.serial, v.mtom_g, v.class_mark, v.char_dim_m, v.notes, id, user.org_id
@@ -39,17 +41,17 @@ export async function updateDrone(id: string, fd: FormData) {
 }
 
 export async function archiveDrone(id: string) {
-  const user = await requireUser();
+  const user = await requireWriter();
   db.prepare("UPDATE drones SET archived = 1 - archived WHERE id = ? AND org_id = ?").run(id, user.org_id);
   revalidatePath("/fleet");
   redirect("/fleet");
 }
 
 export async function addSchedule(droneId: string, fd: FormData) {
-  const user = await requireUser();
+  const user = await requireWriter();
   if (!getDrone(user.org_id, droneId)) return;
-  const days = Number(fd.get("interval_days")) || null;
-  const hours = Number(fd.get("interval_hours")) || null;
+  const days = optNumber(fd.get("interval_days"), 1, 3650);
+  const hours = optNumber(fd.get("interval_hours"), 0.1, 100_000);
   if (!days && !hours) return;
   db.prepare("INSERT INTO maint_schedules (id, drone_id, name, interval_days, interval_hours, last_done_at, last_done_hours) VALUES (?, ?, ?, ?, ?, ?, ?)").run(
     newId(), droneId, String(fd.get("name") || "Service"), days, hours, new Date().toISOString(), droneHours(droneId)
@@ -58,7 +60,7 @@ export async function addSchedule(droneId: string, fd: FormData) {
 }
 
 export async function removeSchedule(droneId: string, scheduleId: string) {
-  const user = await requireUser();
+  const user = await requireWriter();
   if (!getDrone(user.org_id, droneId)) return;
   // schemat tas bort men utfört arbete finns kvar i historiken
   db.prepare("DELETE FROM maint_schedules WHERE id = ? AND drone_id = ?").run(scheduleId, droneId);
@@ -66,11 +68,15 @@ export async function removeSchedule(droneId: string, scheduleId: string) {
 }
 
 export async function logMaintenance(droneId: string, fd: FormData) {
-  const user = await requireUser();
+  const user = await requireWriter();
   if (!getDrone(user.org_id, droneId)) return;
-  const scheduleId = String(fd.get("schedule_id") || "") || null;
+  const sid = String(fd.get("schedule_id") || "");
+  // schemat måste höra till samma drönare
+  const scheduleId = sid && db.prepare("SELECT 1 FROM maint_schedules WHERE id = ? AND drone_id = ?").get(sid, droneId) ? sid : null;
   const wt = String(fd.get("work_type_free") || "").trim() || String(fd.get("work_type") || "").trim() || "Service";
-  const done = fd.get("done_at") ? new Date(String(fd.get("done_at"))) : new Date();
+  // datumfältet är ett svenskt kalenderdatum – tolka som mitt på dagen svensk tid, inte UTC-midnatt
+  const doneStr = String(fd.get("done_at") || "");
+  const done = /^\d{4}-\d{2}-\d{2}$/.test(doneStr) ? parseLocalStockholm(`${doneStr}T12:00`) : new Date();
   db.prepare("INSERT INTO maint_logs (id, drone_id, schedule_id, user_id, work_type, done_at, notes) VALUES (?, ?, ?, ?, ?, ?, ?)").run(
     newId(), droneId, scheduleId, user.id, wt, done.toISOString(), String(fd.get("notes") || "")
   );
@@ -81,14 +87,14 @@ export async function logMaintenance(droneId: string, fd: FormData) {
 }
 
 export async function addWorkType(fd: FormData) {
-  const user = await requireUser();
+  const user = await requireWriter();
   const name = String(fd.get("name") || "").trim();
   if (name) db.prepare("INSERT INTO work_types (id, org_id, name) VALUES (?, ?, ?)").run(newId(), user.org_id, name);
   revalidatePath("/fleet");
 }
 
 export async function removeWorkType(id: string) {
-  const user = await requireUser();
+  const user = await requireWriter();
   db.prepare("DELETE FROM work_types WHERE id = ? AND org_id = ?").run(id, user.org_id);
   revalidatePath("/fleet");
 }

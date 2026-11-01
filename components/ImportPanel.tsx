@@ -3,12 +3,13 @@
 import { useActionState, useState } from "react";
 import { useRouter } from "next/navigation";
 import { importCsv, importTrack, type ImportState, type TrackPoint } from "@/app/(app)/logbook/actions";
+import { thinTrack } from "@/lib/validate";
 
 /** Tolerant tolkning av flyglogg-CSV (Airdata, PhantomHelp/DJI Flight Log Viewer, FlightReader, Litchi m.fl.) */
 function parseFlightCsv(text: string): { points: TrackPoint[]; startedAt: string | null } {
   const lines = text.split(/\r?\n/).filter((l) => l.trim());
   // hoppa över eventuella "sep="-rader eller metadata före rubrikraden
-  let hi = lines.findIndex((l) => /lat/i.test(l) && /lon|lng/i.test(l));
+  const hi = lines.findIndex((l) => /lat/i.test(l) && /lon|lng/i.test(l));
   if (hi < 0) throw new Error("Hittar ingen rubrikrad med latitud/longitud.");
   const sep = (lines[hi].match(/;/g)?.length ?? 0) > (lines[hi].match(/,/g)?.length ?? 0) ? ";" : ",";
   const head = lines[hi].split(sep).map((h) => h.trim().replace(/"/g, "").toLowerCase());
@@ -70,7 +71,8 @@ export function ImportPanel({ drones }: { drones: { id: string; name: string }[]
     setMsg(null);
     try {
       const parsed = parseFlightCsv(await f.text());
-      const res = await importTrack({ points: parsed.points, droneId: droneId || null, fileName: f.name, startedAt: parsed.startedAt });
+      // gallra redan i webbläsaren så att stora loggar inte behöver skickas i sin helhet
+      const res = await importTrack({ points: thinTrack(parsed.points), droneId: droneId || null, fileName: f.name, startedAt: parsed.startedAt });
       if ("error" in res && res.error) setMsg(res.error);
       else if ("id" in res) router.push(`/logbook/${res.id}`);
     } catch (err) {
