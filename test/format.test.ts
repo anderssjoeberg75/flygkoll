@@ -21,10 +21,15 @@ test("parseLocalStockholm: endast datum tolkas som midnatt svensk tid", () => {
 });
 
 test("parseLocalStockholm: ogiltig indata ger ogiltigt datum i stället för undantag", () => {
-  for (const s of ["", "hej", "2026-13", "undefined"]) {
+  for (const s of ["", "hej", "2026-13", "undefined", "2026-01-15T12:xx", "2026-01-15 12:00", "2026-01-15T1200", "2026-13-01", "2026-04-31", "2026-01-15T25:00", "2026-01-15T12:60"]) {
     const d = parseLocalStockholm(s);
     assert.ok(isNaN(d.getTime()), `förväntade ogiltigt datum för "${s}"`);
   }
+});
+
+test("parseLocalStockholm: sekunder från datetime-local godtas", () => {
+  assert.equal(parseLocalStockholm("2026-01-15T12:00:30").toISOString(), "2026-01-15T11:00:00.000Z");
+  assert.equal(parseLocalStockholm("2026-01-15T12:00:30.5").toISOString(), "2026-01-15T11:00:00.000Z");
 });
 
 test("parseLocalStockholm är invers till toLocalInput", () => {

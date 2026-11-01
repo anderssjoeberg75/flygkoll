@@ -46,11 +46,16 @@ function stockholmOffset(ms: number): number {
  * Offseten räknas om vid det framräknade ögonblicket, så tider natten då sommar-/vintertid börjar blir rätt.
  */
 export function parseLocalStockholm(s: string): Date {
-  const m = /^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2}))?/.exec(String(s ?? "").trim());
+  // hela strängen måste följa formatet – en trasig tid får inte falla tillbaka till bara datumet
+  const m = /^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2})(?::\d{2}(?:\.\d+)?)?)?$/.exec(String(s ?? "").trim());
   if (!m) return new Date(NaN);
-  const [, y, mo, da, h = "00", mi = "00"] = m;
-  const wall = Date.UTC(+y, +mo - 1, +da, +h, +mi);
-  if (isNaN(wall)) return new Date(NaN);
+  const [y, mo, da, h, mi] = [m[1], m[2], m[3], m[4] ?? "00", m[5] ?? "00"].map(Number);
+  const wall = Date.UTC(y, mo - 1, da, h, mi);
+  // Date.UTC rullar över (månad 13, 31 april, 25:00) – avvisa i stället för att byta datum
+  const w = new Date(wall);
+  if (isNaN(wall) || w.getUTCFullYear() !== y || w.getUTCMonth() !== mo - 1 || w.getUTCDate() !== da || w.getUTCHours() !== h || w.getUTCMinutes() !== mi) {
+    return new Date(NaN);
+  }
   const first = wall - stockholmOffset(wall);
   return new Date(wall - stockholmOffset(first));
 }
