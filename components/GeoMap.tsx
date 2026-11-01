@@ -105,7 +105,7 @@ export function GeoMap({
 
               let extra = "";
               if (p.severity === "permission") {
-                extra += `<br/><a href="https://www.lfv.se/dronare" target="_blank" rel="noopener noreferrer" style="color:#0f766e;font-weight:600;font-size:12px;display:inline-block;margin-top:6px;">Sök tillstånd (LFV) ↗</a>`;
+                extra += `<br/><a href="https://www.lfv.se/dronare" target="_blank" rel="noopener noreferrer" style="color:#0a6cff;font-weight:600;font-size:12px;display:inline-block;margin-top:6px;">Sök tillstånd (LFV) ↗</a>`;
               }
               if (isNature) {
                 extra += `<br/><a href="https://skyddadnatur.naturvardsverket.se/" target="_blank" rel="noopener noreferrer" style="color:#15803d;font-weight:600;font-size:12px;display:inline-block;margin-top:6px;">🌿 Skyddad natur (Naturvårdsverket) ↗</a>`;
@@ -148,14 +148,14 @@ export function GeoMap({
       if (center && radius) {
         const c = L.circle([center[1], center[0]], {
           radius,
-          color: "#0f766e",
+          color: "#0a6cff",
           weight: 3,
           fillOpacity: 0.08,
           dashArray: "6 6",
         }).addTo(map);
         c.bindTooltip("Operationsområde");
         if (fitTo !== "data") map.fitBounds(c.getBounds().pad(0.6));
-        L.circleMarker([center[1], center[0]], { radius: 5, color: "#0f766e", fillOpacity: 1 }).addTo(map);
+        L.circleMarker([center[1], center[0]], { radius: 5, color: "#0a6cff", fillOpacity: 1 }).addTo(map);
       }
 
       if (track && track.length > 1) {
