@@ -43,6 +43,7 @@ export async function createBriefing(_: CreateState, fd: FormData): Promise<Crea
   if (!isInSweden(lat, lon)) return { error: "Platsen ligger utanför Sverige – datakällorna täcker svenskt luftrum." };
   if (!whenStr) return { error: "Ange datum och tid." };
   const when = parseLocalStockholm(whenStr);
+  if (isNaN(when.getTime())) return { error: "Ogiltigt datum eller tid." };
   const id = await generate({ lat, lon, radius, when, durationH, droneId: String(fd.get("drone") || "") || null, name: String(fd.get("name") || "").trim() || undefined });
   redirect(`/briefings/${id}`);
 }
