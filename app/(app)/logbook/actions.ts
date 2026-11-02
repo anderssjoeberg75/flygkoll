@@ -5,6 +5,7 @@ import { revalidatePath } from "next/cache";
 import { requireWriter, displayName } from "@/lib/auth";
 import { db, newId } from "@/lib/db";
 import { parseLocalStockholm } from "@/lib/format";
+import { FLIGHT_TYPES, oneOf, optNumber, parseCsv, text } from "@/lib/validate";
 import { reverseGeocode } from "@/lib/sources";
 
 type CrewIn = { role: string; userId?: string; name?: string };
@@ -48,7 +49,7 @@ export async function saveFlight(fd: FormData) {
   const id = existing ? existing.id : newId();
   const started = parseLocalStockholm(String(fd.get("started_at") || ""));
   if (isNaN(started.getTime())) redirect(existing ? `/logbook/${existing.id}/edit` : "/logbook/new");
-  const duration = Math.max(0, Number(fd.get("duration_min")) || 0);
+  const duration = optNumber(fd.get("duration_min"), 0, 24 * 60) ?? 0;
 
   // Validera att drönaren tillhör organisationen (#7)
   let droneId = String(fd.get("drone_id") || "").trim() || null;
@@ -64,13 +65,15 @@ export async function saveFlight(fd: FormData) {
     if (!valid) briefingId = null;
   }
 
+  const lat = optNumber(fd.get("lat"), -90, 90), lon = optNumber(fd.get("lon"), -180, 180);
   const vals = {
-    type: String(fd.get("type") || "standard"),
-    location: String(fd.get("location") || ""),
-    lat: fd.get("lat") ? Number(fd.get("lat")) : null,
-    lon: fd.get("lon") ? Number(fd.get("lon")) : null,
-    max_alt_m: fd.get("max_alt_m") ? Number(fd.get("max_alt_m")) : null,
-    notes: String(fd.get("notes") || ""),
+    type: oneOf(fd.get("type"), FLIGHT_TYPES, "standard"),
+    location: text(fd.get("location"), 300),
+    // koordinater sparas bara som par
+    lat: lat !== null && lon !== null ? lat : null,
+    lon: lat !== null && lon !== null ? lon : null,
+    max_alt_m: optNumber(fd.get("max_alt_m"), 0, 10_000),
+    notes: text(fd.get("notes"), 10_000),
   };
 
   if (existing) {
@@ -86,9 +89,9 @@ export async function saveFlight(fd: FormData) {
   }
 
   const crew: CrewIn[] = [0, 1, 2, 3].map((i) => ({
-    role: String(fd.get(`crew_role_${i}`) || ""),
-    userId: String(fd.get(`crew_user_${i}`) || ""),
-    name: String(fd.get(`crew_name_${i}`) || ""),
+    role: text(fd.get(`crew_role_${i}`), 100),
+    userId: text(fd.get(`crew_user_${i}`), 64),
+    name: text(fd.get(`crew_name_${i}`), 200),
   }));
   saveCrew(id, user.org_id, crew);
   revalidatePath("/logbook");
@@ -110,11 +113,12 @@ export async function importCsv(_: ImportState, fd: FormData): Promise<ImportSta
   const user = await requireWriter();
   const file = fd.get("file") as File | null;
   if (!file || file.size === 0) return { error: "Välj en CSV-fil." };
-  const text = await file.text();
-  const lines = text.split(/\r?\n/).filter((l) => l.trim());
-  if (lines.length < 2) return { error: "Filen saknar rader." };
-  const sep = lines[0].includes(";") ? ";" : ",";
-  const head = lines[0].split(sep).map((h) => h.trim().toLowerCase().replace(/"/g, ""));
+  if (file.size > MAX_CSV_BYTES) return { error: "Filen är för stor (max 3 MB)." };
+  // riktig CSV-tolkning: citerade fält får innehålla separator och radbrytning (#28)
+  const rows = parseCsv(await file.text(), MAX_CSV_ROWS + 2);
+  if (rows.length < 2) return { error: "Filen saknar rader." };
+  if (rows.length > MAX_CSV_ROWS + 1) return { error: `Max ${MAX_CSV_ROWS} rader per import.` };
+  const head = rows[0].map((h) => h.toLowerCase());
   const col = (...names: string[]) => head.findIndex((h) => names.some((n) => h.includes(n)));
   const cDate = col("datum", "date", "start"), cDur = col("minut", "duration", "längd", "tid (min)"), cLoc = col("plats", "location");
   const cDrone = col("drönare", "drone", "aircraft"), cType = col("typ", "type"), cNotes = col("anteckning", "notes", "kommentar");
@@ -125,8 +129,7 @@ export async function importCsv(_: ImportState, fd: FormData): Promise<ImportSta
   );
   let n = 0;
   db.transaction(() => {
-    for (const line of lines.slice(1)) {
-      const c = line.split(sep).map((x) => x.trim().replace(/^"|"$/g, ""));
+    for (const c of rows.slice(1)) {
       const raw = c[cDate];
       if (!raw) continue;
       const when = /T|\d{2}:\d{2}/.test(raw) ? parseLocalStockholm(raw.replace(" ", "T").slice(0, 16)) : parseLocalStockholm(`${raw}T12:00`);
@@ -135,7 +138,10 @@ export async function importCsv(_: ImportState, fd: FormData): Promise<ImportSta
       const drone = dn ? drones.find((d) => d.name.toLowerCase() === dn) : undefined;
       const tRaw = (cType >= 0 ? c[cType] : "").toLowerCase();
       const type = tRaw.startsWith("sim") ? "simulator" : tRaw.startsWith("ut") || tRaw.startsWith("instr") ? "instruction" : "standard";
-      ins.run(newId(), user.org_id, user.id, drone?.id ?? null, type, when.toISOString(), Number(c[cDur].replace(",", ".")) || 0, cLoc >= 0 ? c[cLoc] : "", cNotes >= 0 ? c[cNotes] : "");
+      ins.run(
+        newId(), user.org_id, user.id, drone?.id ?? null, type, when.toISOString(),
+        optNumber(c[cDur], 0, 24 * 60) ?? 0, unescapeCell(text(cLoc >= 0 ? c[cLoc] : "", 300)), unescapeCell(text(cNotes >= 0 ? c[cNotes] : "", 10_000))
+      );
       n++;
     }
   })();
@@ -145,12 +151,24 @@ export async function importCsv(_: ImportState, fd: FormData): Promise<ImportSta
 
 export type TrackPoint = { t: number; lat: number; lon: number; alt: number | null; bat: number | null };
 
+const MAX_CSV_BYTES = 3_000_000;
+const MAX_CSV_ROWS = 20_000;
+const MAX_TRACK_POINTS = 50_000;
+// exporten skyddar fält som börjar med = + - @ med ett apostroftecken – ta bort det vid återimport
+const unescapeCell = (s: string) => (/^'[=+\-@]/.test(s) ? s.slice(1) : s);
+const numOrNull = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : null);
+
 export async function importTrack(payload: { points: TrackPoint[]; droneId: string | null; fileName: string; startedAt: string | null }) {
   const user = await requireWriter();
-  const pts = payload.points.filter((p) => Number.isFinite(p.lat) && Number.isFinite(p.lon) && !(p.lat === 0 && p.lon === 0));
+  // payloaden kommer från klienten: kontrollera form och storlek (#28)
+  if (!payload || !Array.isArray(payload.points)) return { error: "Ogiltig logg." };
+  if (payload.points.length > MAX_TRACK_POINTS) return { error: `Loggen har för många punkter (max ${MAX_TRACK_POINTS}).` };
+  const pts = payload.points
+    .filter((p) => p && Number.isFinite(p.t) && Number.isFinite(p.lat) && Number.isFinite(p.lon) && Math.abs(p.lat) <= 90 && Math.abs(p.lon) <= 180 && !(p.lat === 0 && p.lon === 0))
+    .map((p) => ({ t: p.t, lat: p.lat, lon: p.lon, alt: numOrNull(p.alt), bat: numOrNull(p.bat) }));
   if (pts.length < 2) return { error: "Hittade inga giltiga GPS-punkter i loggen." };
 
-  let validDrone = payload.droneId;
+  let validDrone = typeof payload.droneId === "string" ? payload.droneId : null;
   if (validDrone) {
     const vd = db.prepare("SELECT id FROM drones WHERE id = ? AND org_id = ?").get(validDrone, user.org_id);
     if (!vd) validDrone = null;
@@ -170,16 +188,17 @@ export async function importTrack(payload: { points: TrackPoint[]; droneId: stri
   // gallra spåret till max ~1500 punkter
   const step = Math.max(1, Math.ceil(pts.length / 1500));
   const track = pts.filter((_, i) => i % step === 0);
-  const started = payload.startedAt ? new Date(payload.startedAt) : new Date(pts[0].t);
+  const startedRaw = typeof payload.startedAt === "string" ? new Date(payload.startedAt) : new Date(pts[0].t);
+  const started = isNaN(startedRaw.getTime()) ? new Date(pts[0].t) : startedRaw;
   const id = newId();
   const place = await reverseGeocode(pts[0].lat, pts[0].lon).catch(() => "");
   db.prepare(
     `INSERT INTO flights (id, org_id, pilot_id, drone_id, type, started_at, duration_min, location, lat, lon, max_alt_m, distance_m, battery_start, battery_end, track, source, notes)
      VALUES (?, ?, ?, ?, 'standard', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'log', ?)`
   ).run(
-    id, user.org_id, user.id, validDrone, started.toISOString(), Math.round(durationMin * 10) / 10, place,
+    id, user.org_id, user.id, validDrone, started.toISOString(), Math.min(24 * 60, Math.max(0, Math.round(durationMin * 10) / 10)), place,
     pts[0].lat, pts[0].lon, alts.length ? Math.max(...alts) : null, Math.round(dist),
-    bats.length ? bats[0] : null, bats.length ? bats[bats.length - 1] : null, JSON.stringify(track), `Importerad från ${payload.fileName}`
+    bats.length ? bats[0] : null, bats.length ? bats[bats.length - 1] : null, JSON.stringify(track), `Importerad från ${text(payload.fileName, 200)}`
   );
   revalidatePath("/logbook");
   return { id };

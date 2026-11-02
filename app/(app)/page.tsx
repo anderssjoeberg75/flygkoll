@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { requireUser } from "@/lib/auth";
+import { safeJson } from "@/lib/validate";
 import { db } from "@/lib/db";
 import { dueMaintenance } from "@/lib/fleet";
 import { fmtDateTime, fmtMinutes, fmtDate, fmtTime, STATUS_LABEL } from "@/lib/format";
@@ -26,7 +27,7 @@ export default async function Dashboard() {
   const latestRow = recent[0]
     ? (db.prepare("SELECT result FROM briefings WHERE id = ?").get(recent[0].id) as { result: string } | undefined)
     : undefined;
-  const latest = latestRow ? (JSON.parse(latestRow.result) as BriefingResult) : null;
+  const latest = latestRow ? safeJson<BriefingResult | null>(latestRow.result, null) : null;
 
   // briefingar per vecka, fem veckor bakåt (äldst först)
   const weekly = [0, 0, 0, 0, 0];
@@ -40,7 +41,7 @@ export default async function Dashboard() {
   const maxWeek = Math.max(1, ...weekly);
 
   const due = dueMaintenance(user.org_id);
-  const classes: string[] = JSON.parse(user.license_classes || "[]");
+  const classes = safeJson<string[]>(user.license_classes, []);
   const daysLeft = user.license_expiry ? Math.round((new Date(user.license_expiry).getTime() - Date.now()) / 864e5) : null;
   const licTone = daysLeft === null ? "var(--muted)" : daysLeft < 0 ? "var(--danger)" : daysLeft <= 60 ? "var(--warn)" : "var(--accent)";
   const hour = Number(new Intl.DateTimeFormat("sv-SE", { timeZone: "Europe/Stockholm", hour: "numeric" }).format(new Date()));

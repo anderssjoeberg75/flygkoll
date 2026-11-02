@@ -1,4 +1,5 @@
 import { requireUser } from "@/lib/auth";
+import { safeJson } from "@/lib/validate";
 import { listDrones } from "@/lib/fleet";
 import { StateForm } from "@/components/StateForm";
 import { saveProfile, changePassword } from "./actions";
@@ -6,7 +7,7 @@ import { saveProfile, changePassword } from "./actions";
 export default async function Settings() {
   const user = await requireUser(true);
   const drones = listDrones(user.org_id);
-  const classes: string[] = JSON.parse(user.license_classes || "[]");
+  const classes = safeJson<string[]>(user.license_classes, []);
   return (
     <>
       <div className="page-head"><div><h1>Inställningar</h1><p className="muted" style={{ margin: 0 }}>{user.email}</p></div></div>
@@ -64,7 +65,7 @@ export default async function Settings() {
         <StateForm action={changePassword} submit="Byt lösenord">
           <h2>Lösenord</h2>
           <div><label>Nuvarande</label><input type="password" name="current" autoComplete="current-password" required /></div>
-          <div><label>Nytt (minst 8 tecken)</label><input type="password" name="new" autoComplete="new-password" minLength={8} required /></div>
+          <div><label>Nytt (minst 10 tecken)</label><input type="password" name="new" autoComplete="new-password" minLength={10} required /></div>
         </StateForm>
       </div>
     </>

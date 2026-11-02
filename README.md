@@ -61,6 +61,14 @@ WantedBy=multi-user.target
 Kör bakom en reverse proxy med HTTPS (Caddy/nginx). Sessionskakan sätts som `Secure` i produktion;
 kör du utan HTTPS på ditt LAN, sätt `FLYGKOLL_INSECURE_COOKIE=1`.
 
+Proxyn ska sätta `X-Forwarded-For` (Caddy gör det automatiskt; i nginx `proxy_set_header X-Forwarded-For $remote_addr;`).
+Adressen används för att spärra upprepade felaktiga inloggningar per e-post och IP, så att en angripare inte kan
+låsa ute en användare. Spärrarna lagras i databasen och gäller även efter omstart.
+
+Säkerhet i korthet: lösenord måste vara minst 10 tecken och inte vara vanliga eller innehålla e-postadressen.
+Appen skickar en strikt Content-Security-Policy och laddar inga resurser från tredje part förutom kartplattor –
+typsnitten följer med appen. Offlinesparade sidor i webbläsaren raderas vid utloggning.
+
 ## Datakällor (hämtas server-side, parallellt)
 
 | Data | Källa | Endpoint |

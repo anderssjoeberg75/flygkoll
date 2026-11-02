@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { requireUser, displayName } from "@/lib/auth";
+import { safeJson } from "@/lib/validate";
 import { db } from "@/lib/db";
 import { listDrones } from "@/lib/fleet";
 import { fmtDateTime } from "@/lib/format";
@@ -22,7 +23,7 @@ export default async function RunChecklist({
   const runs = db
     .prepare("SELECT r.created_at, r.completed, r.checked, u.first_name, u.last_name, u.email, d.name AS drone FROM checklist_runs r JOIN users u ON u.id = r.user_id LEFT JOIN drones d ON d.id = r.drone_id WHERE r.checklist_id = ? ORDER BY r.created_at DESC LIMIT 15")
     .all(id) as { created_at: string; completed: number; checked: string; first_name: string; last_name: string; email: string; drone: string | null }[];
-  const items = JSON.parse(c.items) as string[];
+  const items = safeJson<string[]>(c.items, []);
   return (
     <>
       <div className="page-head">
@@ -53,7 +54,7 @@ export default async function RunChecklist({
           {runs.length === 0 ? <p className="small muted">Inga ännu.</p> : runs.map((r, i) => (
             <div key={i} className="spread small" style={{ padding: "6px 0", borderBottom: "1px solid var(--border)" }}>
               <span>{fmtDateTime(r.created_at.replace(" ", "T") + "Z")}<br /><span className="muted">{displayName(r)}{r.drone ? ` · ${r.drone}` : ""}</span></span>
-              <span className={`badge ${r.completed ? "b-ok" : "b-warn"}`}>{r.completed ? "Klar" : `${(JSON.parse(r.checked) as number[]).length}/${items.length}`}</span>
+              <span className={`badge ${r.completed ? "b-ok" : "b-warn"}`}>{r.completed ? "Klar" : `${safeJson<number[]>(r.checked, []).length}/${items.length}`}</span>
             </div>
           ))}
         </div>

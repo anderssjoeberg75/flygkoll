@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import * as turf from "@turf/turf";
 import type { Geometry, Position } from "geojson";
 import { getUser } from "@/lib/auth";
+import { safeJson } from "@/lib/validate";
 import { db } from "@/lib/db";
 import type { BriefingResult } from "@/lib/briefing";
 
@@ -30,7 +31,8 @@ export async function GET(_: Request, { params }: { params: Promise<{ id: string
     | { name: string; result: string }
     | undefined;
   if (!row) return NextResponse.json({ error: "Not found" }, { status: 404 });
-  const r = JSON.parse(row.result) as BriefingResult;
+  const r = safeJson<BriefingResult | null>(row.result, null);
+  if (!r) return NextResponse.json({ error: "Briefingens data är skadad." }, { status: 500 });
   const op = turf.circle(r.center, r.radius_m / 1000, { steps: 72, units: "kilometers" });
   const styles = Object.entries(COLORS)
     .map(([k, c]) => `<Style id="${k}"><LineStyle><color>${c}</color><width>2</width></LineStyle><PolyStyle><color>33${c.slice(2)}</color></PolyStyle></Style>`)

@@ -1,7 +1,7 @@
 import "server-only";
 import crypto from "node:crypto";
 import util from "node:util";
-import { cookies } from "next/headers";
+import { cookies, headers } from "next/headers";
 import { redirect } from "next/navigation";
 import { db } from "./db";
 
@@ -31,36 +31,11 @@ export type User = {
   disabled_at?: string | null;
 };
 
-/* ---------- Rate limiting på inloggning (#6) ---------- */
-type RateLimitEntry = { count: number; firstAttempt: number };
-const loginAttempts = new Map<string, RateLimitEntry>();
-const MAX_ATTEMPTS = 10;
-const WINDOW_MS = 15 * 60 * 1000; // 15 minuter
-
-export function checkLoginRateLimit(key: string): { allowed: boolean; remaining: number; resetMs: number } {
-  const now = Date.now();
-  const entry = loginAttempts.get(key);
-  if (!entry || now - entry.firstAttempt > WINDOW_MS) {
-    return { allowed: true, remaining: MAX_ATTEMPTS, resetMs: WINDOW_MS };
-  }
-  if (entry.count >= MAX_ATTEMPTS) {
-    return { allowed: false, remaining: 0, resetMs: WINDOW_MS - (now - entry.firstAttempt) };
-  }
-  return { allowed: true, remaining: MAX_ATTEMPTS - entry.count, resetMs: WINDOW_MS - (now - entry.firstAttempt) };
-}
-
-export function recordLoginAttempt(key: string, success: boolean) {
-  if (success) {
-    loginAttempts.delete(key);
-    return;
-  }
-  const now = Date.now();
-  const entry = loginAttempts.get(key);
-  if (!entry || now - entry.firstAttempt > WINDOW_MS) {
-    loginAttempts.set(key, { count: 1, firstAttempt: now });
-  } else {
-    entry.count += 1;
-  }
+/* ---------- Klientens IP (för spärr av försök, #27) ---------- */
+/** Första adressen i X-Forwarded-For (sätts av reverse proxyn), annars X-Real-IP. */
+export async function clientIp(): Promise<string> {
+  const h = await headers();
+  return h.get("x-forwarded-for")?.split(",")[0].trim() || h.get("x-real-ip")?.trim() || "okänd";
 }
 
 /* ---------- Asynkron Scrypt (#6) ---------- */
@@ -91,8 +66,9 @@ export function cleanupExpiredSessions() {
     lastCleanup = now;
     try {
       db.prepare("DELETE FROM sessions WHERE expires_at < ?").run(new Date().toISOString());
-    } catch {
-      /* ignorera fel vid cleanup */
+    } catch (e) {
+      // ska inte stoppa inloggningen, men får inte heller försvinna tyst (#28)
+      console.error("[flygkoll] kunde inte rensa utgångna sessioner:", e);
     }
   }
 }

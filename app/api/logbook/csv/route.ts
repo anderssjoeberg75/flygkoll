@@ -2,8 +2,7 @@ import { NextResponse } from "next/server";
 import { getUser } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { fmtDateTime } from "@/lib/format";
-
-const q = (s: unknown) => `"${String(s ?? "").replace(/"/g, '""')}"`;
+import { csvCell as q } from "@/lib/validate";
 
 export async function GET() {
   const user = await getUser();

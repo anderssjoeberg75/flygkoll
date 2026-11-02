@@ -1,4 +1,14 @@
 import type { Metadata, Viewport } from "next";
+// typsnitten paketeras och serveras från appen själv – inga anrop till Google (#28)
+import "@fontsource/inter/400.css";
+import "@fontsource/inter/500.css";
+import "@fontsource/inter/600.css";
+import "@fontsource/inter/700.css";
+import "@fontsource/inter-tight/500.css";
+import "@fontsource/inter-tight/600.css";
+import "@fontsource/inter-tight/700.css";
+import "@fontsource/jetbrains-mono/400.css";
+import "@fontsource/jetbrains-mono/600.css";
 import "./globals.css";
 import "leaflet/dist/leaflet.css";
 import { getUser } from "@/lib/auth";
@@ -26,15 +36,6 @@ export default async function RootLayout({ children }: { children: React.ReactNo
   const theme = user?.theme && user.theme !== "system" ? user.theme : undefined;
   return (
     <html lang="sv" data-theme={theme}>
-      <head>
-        <link rel="preconnect" href="https://fonts.googleapis.com" />
-        <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="" />
-        {/* eslint-disable-next-line @next/next/no-page-custom-font */}
-        <link
-          rel="stylesheet"
-          href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Inter+Tight:wght@500;600;700&family=JetBrains+Mono:wght@400;600&display=swap"
-        />
-      </head>
       <body>
         {children}
         <script

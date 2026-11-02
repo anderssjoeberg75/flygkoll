@@ -1,5 +1,6 @@
 import { notFound } from "next/navigation";
 import { requireAdmin } from "@/lib/auth";
+import { safeJson } from "@/lib/validate";
 import { db } from "@/lib/db";
 import { listDrones } from "@/lib/fleet";
 import { ChecklistEditor } from "@/components/ChecklistEditor";
@@ -12,7 +13,7 @@ export default async function EditChecklist({ params }: { params: Promise<{ id: 
   return (
     <>
       <div className="page-head"><h1>Redigera checklista</h1></div>
-      <ChecklistEditor c={{ ...c, items: JSON.parse(c.items) }} drones={listDrones(user.org_id).map((d) => ({ id: d.id, name: d.name }))} />
+      <ChecklistEditor c={{ ...c, items: safeJson<string[]>(c.items, []) }} drones={listDrones(user.org_id).map((d) => ({ id: d.id, name: d.name }))} />
     </>
   );
 }

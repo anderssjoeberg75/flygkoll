@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { requireUser } from "@/lib/auth";
+import { safeJson } from "@/lib/validate";
 import { db } from "@/lib/db";
 
 const KIND: Record<string, string> = { preflight: "Före flygning", postflight: "Efter flygning", daily: "Daglig kontroll", custom: "Övrigt" };
@@ -34,7 +35,7 @@ export default async function Checklists({
             {g.items.map((c) => (
               <Link key={c.id} href={`/checklists/${c.id}${query}`} className="card" style={{ color: "inherit", padding: 14 }}>
                 <strong>{c.name}</strong>
-                <div className="small muted">{(JSON.parse(c.items) as string[]).length} punkter{c.drone_name ? ` · ${c.drone_name}` : ""}</div>
+                <div className="small muted">{safeJson<string[]>(c.items, []).length} punkter{c.drone_name ? ` · ${c.drone_name}` : ""}</div>
               </Link>
             ))}
           </div>

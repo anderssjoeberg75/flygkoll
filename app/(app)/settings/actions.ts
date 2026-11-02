@@ -3,6 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { requireUser, requireAdmin, requireWriter, hashPassword, verifyPassword, currentSessionToken } from "@/lib/auth";
 import { db, newId } from "@/lib/db";
+import { THEMES, isEmail, oneOf, optNumber, passwordProblem, text } from "@/lib/validate";
 
 async function fileToDataUrl(f: File | null, maxBytes: number) {
   if (!f || f.size === 0) return null;
@@ -29,12 +30,12 @@ export async function saveProfile(_: FormState, fd: FormData): Promise<FormState
       `UPDATE users SET first_name=?, last_name=?, default_drone_id=?, theme=?, license_number=?, license_expiry=?, license_classes=?${photo ? ", photo=?" : ""} WHERE id=?`
     ).run(
       ...[
-        String(fd.get("first_name") || "").trim(),
-        String(fd.get("last_name") || "").trim(),
+        text(fd.get("first_name"), 100),
+        text(fd.get("last_name"), 100),
         defaultDrone,
-        String(fd.get("theme") || "system"),
-        String(fd.get("license_number") || "").trim() || null,
-        String(fd.get("license_expiry") || "") || null,
+        oneOf(fd.get("theme"), THEMES, "system"),
+        text(fd.get("license_number"), 100) || null,
+        /^\d{4}-\d{2}-\d{2}$/.test(String(fd.get("license_expiry") || "")) ? String(fd.get("license_expiry")) : null,
         JSON.stringify(classes),
         ...(photo ? [photo] : []),
         user.id,
@@ -54,7 +55,8 @@ export async function changePassword(_: FormState, fd: FormData): Promise<FormSt
   const valid = await verifyPassword(String(fd.get("current") || ""), row.password_hash);
   if (!valid) return { error: "Nuvarande lösenord stämmer inte." };
   const pw = String(fd.get("new") || "");
-  if (pw.length < 8) return { error: "Minst 8 tecken." };
+  const pwErr = passwordProblem(pw, user.email);
+  if (pwErr) return { error: pwErr };
 
   const pwHash = await hashPassword(pw);
   db.prepare("UPDATE users SET password_hash = ?, must_change_password = 0 WHERE id = ?").run(pwHash, user.id);
@@ -75,10 +77,10 @@ export async function saveOrg(_: FormState, fd: FormData): Promise<FormState> {
   const user = await requireAdmin();
   try {
     const logo = await fileToDataUrl(fd.get("logo") as File | null, 300_000);
-    const y = Number(fd.get("wind_yellow")) || 8;
-    const r = Math.max(y + 0.5, Number(fd.get("wind_red")) || 12);
+    const y = optNumber(fd.get("wind_yellow"), 1, 40) ?? 8;
+    const r = Math.max(y + 0.5, optNumber(fd.get("wind_red"), 1, 50) ?? 12);
     db.prepare(`UPDATE orgs SET name=?, wind_yellow=?, wind_red=?${logo ? ", logo_url=?" : ""} WHERE id=?`).run(
-      ...[String(fd.get("name") || "").trim() || user.org_name, y, r, ...(logo ? [logo] : []), user.org_id]
+      ...[text(fd.get("name"), 200) || user.org_name, y, r, ...(logo ? [logo] : []), user.org_id]
     );
     if (fd.get("remove_logo")) db.prepare("UPDATE orgs SET logo_url = NULL WHERE id = ?").run(user.org_id);
   } catch (e) {
@@ -95,13 +97,14 @@ export async function addMember(_: FormState, fd: FormData): Promise<FormState> 
   const roleRaw = String(fd.get("role") || "pilot");
   const role = roleRaw === "admin" || roleRaw === "viewer" ? roleRaw : "pilot";
 
-  if (!email.includes("@")) return { error: "Ogiltig e-post." };
-  if (pw.length < 8) return { error: "Tillfälligt lösenord måste vara minst 8 tecken." };
+  if (!isEmail(email)) return { error: "Ogiltig e-post." };
+  const pwErr = passwordProblem(pw, email);
+  if (pwErr) return { error: `Tillfälligt lösenord: ${pwErr}` };
   if (db.prepare("SELECT 1 FROM users WHERE email = ?").get(email)) return { error: "E-postadressen finns redan." };
 
   const pwHash = await hashPassword(pw);
   db.prepare("INSERT INTO users (id, org_id, email, password_hash, first_name, last_name, role, must_change_password) VALUES (?, ?, ?, ?, ?, ?, ?, 1)").run(
-    newId(), user.org_id, email, pwHash, String(fd.get("first_name") || ""), String(fd.get("last_name") || ""), role
+    newId(), user.org_id, email, pwHash, text(fd.get("first_name"), 100), text(fd.get("last_name"), 100), role
   );
   revalidatePath("/org");
   return { ok: `${email} har lagts till. Dela det tillfälliga lösenordet med personen. Vid inloggning krävs lösenordsbyte.` };

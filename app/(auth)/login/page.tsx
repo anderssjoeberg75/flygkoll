@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { AuthForm } from "@/components/AuthForm";
+import { ClearOfflineCache } from "@/components/ClearOfflineCache";
 import { login } from "../actions";
 import { db } from "@/lib/db";
 import { getUser } from "@/lib/auth";
@@ -10,14 +11,17 @@ export default async function LoginPage() {
   const n = (db.prepare("SELECT COUNT(*) AS n FROM users").get() as { n: number }).n;
   if (n === 0) redirect("/register");
   return (
-    <AuthForm
-      mode="login"
-      action={login}
-      footer={
-        <p className="small muted">
-          Inget konto? <Link href="/register">Registrera dig</Link>
-        </p>
-      }
-    />
+    <>
+      <ClearOfflineCache />
+      <AuthForm
+        mode="login"
+        action={login}
+        footer={
+          <p className="small muted">
+            Inget konto? <Link href="/register">Registrera dig</Link>
+          </p>
+        }
+      />
+    </>
   );
 }

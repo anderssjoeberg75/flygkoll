@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { requireUser } from "@/lib/auth";
+import { safeJson } from "@/lib/validate";
 import { db } from "@/lib/db";
 import type { BriefingResult } from "@/lib/briefing";
 import { fmtDateTime, fmtTime, STATUS_LABEL, SEVERITY_LABEL, compass } from "@/lib/format";
@@ -19,7 +20,8 @@ export default async function BriefingPage({ params }: { params: Promise<{ id: s
     .prepare("SELECT * FROM briefings WHERE id = ? AND org_id = ? AND (user_id = ? OR shared = 1)")
     .get(id, user.org_id, user.id) as { id: string; name: string; user_id: string; drone_id: string | null; shared: number; result: string; created_at: string } | undefined;
   if (!row) notFound();
-  const r = JSON.parse(row.result) as BriefingResult;
+  const r = safeJson<BriefingResult | null>(row.result, null);
+  if (!r) throw new Error("Briefingens data är skadad och kan inte visas. Skapa en ny briefing för platsen.");
   const st = STATUS_LABEL[r.status];
   const w = r.weather.atStart;
   const wp0 = r.weather.windProfile[0];

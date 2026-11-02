@@ -1,6 +1,6 @@
 "use client";
 
-import { useActionState } from "react";
+import { useActionState, useState } from "react";
 import type { AuthState } from "@/app/(auth)/actions";
 import { Logo } from "./Logo";
 
@@ -57,6 +57,9 @@ export function AuthForm({
   footer?: React.ReactNode;
 }) {
   const [state, formAction, pending] = useActionState(action, {});
+  // React tömmer formuläret efter en serveråtgärd – håll fälten kontrollerade så att de finns kvar vid fel
+  const [v, setV] = useState({ first_name: "", last_name: "", org: "", email: "" });
+  const field = (k: keyof typeof v) => ({ name: k, id: k, value: v[k], onChange: (e: React.ChangeEvent<HTMLInputElement>) => setV({ ...v, [k]: e.target.value }) });
   return (
     <div className="auth">
       <NightScene />
@@ -70,16 +73,16 @@ export function AuthForm({
           {mode === "register" && (
             <>
               <div className="grid g2">
-                <div><label htmlFor="first_name">Förnamn</label><input id="first_name" name="first_name" required /></div>
-                <div><label htmlFor="last_name">Efternamn</label><input id="last_name" name="last_name" /></div>
+                <div><label htmlFor="first_name">Förnamn</label><input {...field("first_name")} required /></div>
+                <div><label htmlFor="last_name">Efternamn</label><input {...field("last_name")} /></div>
               </div>
-              <div><label htmlFor="org">Organisation</label><input id="org" name="org" placeholder="T.ex. ditt namn eller företag" /></div>
+              <div><label htmlFor="org">Organisation</label><input {...field("org")} placeholder="T.ex. ditt namn eller företag" /></div>
             </>
           )}
-          <div><label htmlFor="email">E-post</label><input id="email" name="email" type="email" autoComplete="email" placeholder="namn@exempel.se" required /></div>
+          <div><label htmlFor="email">E-post</label><input {...field("email")} type="email" autoComplete="email" placeholder="namn@exempel.se" required /></div>
           <div>
             <label htmlFor="password">Lösenord</label>
-            <input id="password" name="password" type="password" autoComplete={mode === "login" ? "current-password" : "new-password"} required minLength={mode === "register" ? 8 : undefined} />
+            <input id="password" name="password" type="password" autoComplete={mode === "login" ? "current-password" : "new-password"} required minLength={mode === "register" ? 10 : undefined} />
           </div>
           {state.error && <p className="error" role="alert" style={{ margin: 0 }}>{state.error}</p>}
           <button className="btn" disabled={pending} style={{ minHeight: 50 }}>{pending ? "Vänta…" : mode === "login" ? "Logga in" : "Skapa konto"}</button>
