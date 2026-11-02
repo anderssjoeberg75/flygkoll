@@ -7,7 +7,7 @@ import { db, newId } from "@/lib/db";
 async function fileToDataUrl(f: File | null, maxBytes: number) {
   if (!f || f.size === 0) return null;
   if (f.size > maxBytes) throw new Error("Filen är för stor.");
-  if (!/^image\/(png|jpeg|webp|svg\+xml|gif)$/.test(f.type)) throw new Error("Endast bildfiler.");
+  if (!/^image\/(png|jpeg|webp|gif)$/.test(f.type)) throw new Error("Endast bildfiler.");
   return `data:${f.type};base64,${Buffer.from(await f.arrayBuffer()).toString("base64")}`;
 }
 

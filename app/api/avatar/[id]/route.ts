@@ -22,12 +22,16 @@ export async function GET(
     return new NextResponse("Invalid photo", { status: 400 });
   }
 
-  const contentType = match[1];
+  // Endast rasterbilder serveras – SVG kan innehålla skript (lagrad XSS)
+  const contentType = match[1].toLowerCase();
+  if (!/^image\/(png|jpeg|webp|gif)$/.test(contentType)) return new NextResponse("Unsupported media type", { status: 415 });
   const buffer = Buffer.from(match[2], "base64");
 
   return new NextResponse(buffer, {
     headers: {
       "Content-Type": contentType,
+      "X-Content-Type-Options": "nosniff",
+      "Content-Security-Policy": "default-src 'none'; sandbox",
       "Cache-Control": "public, max-age=86400, stale-while-revalidate=604800",
     },
   });
