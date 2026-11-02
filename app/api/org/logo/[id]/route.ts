@@ -9,6 +9,8 @@ export async function GET(
   const user = await getUser();
   if (!user) return new NextResponse("Unauthorized", { status: 401 });
   const { id } = await params;
+  // bara den egna organisationens logotyp (#28)
+  if (id !== user.org_id) return new NextResponse("Not found", { status: 404 });
 
   const row = db
     .prepare("SELECT logo_url FROM orgs WHERE id = ?")

@@ -216,6 +216,20 @@ function runMigrations(database: Database.Database) {
         `);
       },
     },
+    {
+      // Spärr av inloggnings-/registreringsförsök som överlever omstarter och delas mellan processer (#27)
+      version: 2,
+      run: (db) => {
+        db.exec(`
+          CREATE TABLE IF NOT EXISTS rate_limits (
+            key TEXT PRIMARY KEY,
+            count INTEGER NOT NULL,
+            window_start INTEGER NOT NULL
+          );
+          CREATE INDEX IF NOT EXISTS idx_rate_limits_window ON rate_limits(window_start);
+        `);
+      },
+    },
   ];
 
   for (const m of migrations) {

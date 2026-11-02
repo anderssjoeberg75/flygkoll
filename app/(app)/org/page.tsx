@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { requireUser } from "@/lib/auth";
+import { safeJson } from "@/lib/validate";
 import { db } from "@/lib/db";
 import { orgMembers } from "@/lib/members";
 import { fmtMinutes } from "@/lib/format";
@@ -88,7 +89,7 @@ export default async function Org() {
             <tbody>
               {members.map((m) => {
                 const daysLeft = m.license_expiry ? Math.round((new Date(m.license_expiry).getTime() - Date.now()) / 864e5) : null;
-                const licClasses: string[] = JSON.parse(m.license_classes || "[]");
+                const licClasses = safeJson<string[]>(m.license_classes, []);
                 return (
                   <tr key={m.id}>
                     <td className="row">
@@ -132,7 +133,7 @@ export default async function Org() {
               <div><label>Förnamn</label><input name="first_name" /></div>
               <div><label>Efternamn</label><input name="last_name" /></div>
               <div><label>E-post</label><input name="email" type="email" required /></div>
-              <div><label>Tillfälligt lösenord</label><input name="password" minLength={8} required /></div>
+              <div><label>Tillfälligt lösenord (minst 10 tecken)</label><input name="password" minLength={10} required /></div>
             </div>
             <div style={{ maxWidth: 240 }}>
               <label>Roll</label>

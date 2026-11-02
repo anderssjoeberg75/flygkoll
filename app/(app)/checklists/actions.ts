@@ -4,19 +4,21 @@ import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import { requireWriter } from "@/lib/auth";
 import { db, newId } from "@/lib/db";
+import { CHECKLIST_KINDS, oneOf, safeJson, text } from "@/lib/validate";
 
 function items(fd: FormData) {
   return String(fd.get("items") || "")
     .split(/\r?\n/)
-    .map((s) => s.trim())
-    .filter(Boolean);
+    .map((s) => s.trim().slice(0, 500))
+    .filter(Boolean)
+    .slice(0, 200);
 }
 
 export async function saveChecklist(fd: FormData) {
   const user = await requireWriter();
   const id = String(fd.get("id") || "").trim();
-  const name = String(fd.get("name") || "").trim() || "Checklista";
-  const kind = String(fd.get("kind") || "custom");
+  const name = text(fd.get("name"), 200) || "Checklista";
+  const kind = oneOf(fd.get("kind"), CHECKLIST_KINDS, "custom");
 
   let drone = String(fd.get("drone_id") || "").trim() || null;
   if (drone) {
@@ -69,7 +71,7 @@ export async function saveRun(checklistId: string, droneId: string | null, check
     if (!vb) validBriefing = null;
   }
 
-  const n = (JSON.parse(c.items) as string[]).length;
+  const n = safeJson<string[]>(c.items, []).length;
   const nid = newId();
   db.prepare("INSERT INTO checklist_runs (id, checklist_id, user_id, drone_id, briefing_id, checked, completed) VALUES (?, ?, ?, ?, ?, ?, ?)").run(
     nid, checklistId, user.id, validDrone, validBriefing, JSON.stringify(checked), checked.length >= n ? 1 : 0

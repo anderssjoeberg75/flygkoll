@@ -1,0 +1,110 @@
+/** Validering och tolkning av indata från formulär och filer. Rena funktioner – testbara utan databas. */
+
+export const FLIGHT_TYPES = ["standard", "instruction", "simulator"] as const;
+export const CLASS_MARKS = ["none", "C0", "C1", "C2", "C3", "C4", "C5", "C6"] as const;
+export const CHECKLIST_KINDS = ["preflight", "postflight", "daily", "custom"] as const;
+export const THEMES = ["system", "light", "dark"] as const;
+
+/** Värdet om det finns i listan, annars standardvärdet. */
+export function oneOf<T extends string>(v: unknown, allowed: readonly T[], fallback: T): T {
+  return typeof v === "string" && (allowed as readonly string[]).includes(v) ? (v as T) : fallback;
+}
+
+/** Tal inom [min, max] eller null för tomma/ogiltiga fält ("12,5" godtas). */
+export function optNumber(v: unknown, min = -Infinity, max = Infinity): number | null {
+  if (v === null || v === undefined || String(v).trim() === "") return null;
+  const n = Number(String(v).trim().replace(",", "."));
+  return Number.isFinite(n) && n >= min && n <= max ? n : null;
+}
+
+export function isEmail(s: string): boolean {
+  return s.length <= 254 && /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(s);
+}
+
+/** Text begränsad till max tecken. */
+export const text = (v: unknown, max: number) => String(v ?? "").trim().slice(0, max);
+
+/* ---------- lösenord ---------- */
+
+export const MIN_PASSWORD = 10;
+const COMMON = new Set([
+  "password", "password1", "password123", "lösenord", "losenord", "lösenord123", "qwerty", "qwertyuiop", "123456789", "1234567890",
+  "12345678910", "abcdefghij", "iloveyou12", "drönare123", "dronare123", "flygkoll", "flygkoll123", "sommar2026", "vinter2026", "hösten2026",
+]);
+
+/** Felmeddelande om lösenordet inte duger, annars null. */
+export function passwordProblem(pw: string, email = ""): string | null {
+  if (pw.length < MIN_PASSWORD) return `Lösenordet måste vara minst ${MIN_PASSWORD} tecken.`;
+  if (pw.length > 200) return "Lösenordet är för långt (max 200 tecken).";
+  const lower = pw.toLowerCase();
+  if (COMMON.has(lower) || /^(.)\1+$/.test(pw) || /^(0123456789|1234567890|9876543210)/.test(pw)) return "Lösenordet är för vanligt – välj ett annat.";
+  const local = email.toLowerCase().split("@")[0] ?? "";
+  if (local.length >= 4 && lower.includes(local)) return "Lösenordet får inte innehålla din e-postadress.";
+  return null;
+}
+
+/* ---------- CSV ---------- */
+
+/**
+ * Tolkar CSV med citerade fält (separator och radbrytning inuti citat, "" som citattecken).
+ * Avgränsaren gissas från rubrikraden (; eller ,). Tomma rader hoppas över.
+ */
+export function parseCsv(input: string, maxRows = Infinity): string[][] {
+  const textIn = input.replace(/^﻿/, "");
+  const firstLine = textIn.split(/\r?\n/, 1)[0] ?? "";
+  const sep = (firstLine.match(/;/g)?.length ?? 0) >= (firstLine.match(/,/g)?.length ?? 0) && firstLine.includes(";") ? ";" : ",";
+  const rows: string[][] = [];
+  let row: string[] = [];
+  let cell = "";
+  let quoted = false;
+  const pushRow = () => {
+    row.push(cell);
+    if (row.some((c) => c.trim() !== "")) rows.push(row.map((c) => c.trim()));
+    row = [];
+    cell = "";
+  };
+  for (let i = 0; i < textIn.length; i++) {
+    const ch = textIn[i];
+    if (quoted) {
+      if (ch === '"') {
+        if (textIn[i + 1] === '"') {
+          cell += '"';
+          i++;
+        } else quoted = false;
+      } else cell += ch;
+    } else if (ch === '"') quoted = true;
+    else if (ch === sep) {
+      row.push(cell);
+      cell = "";
+    } else if (ch === "\n" || ch === "\r") {
+      if (ch === "\r" && textIn[i + 1] === "\n") i++;
+      pushRow();
+      if (rows.length >= maxRows) return rows;
+    } else cell += ch;
+  }
+  if (cell !== "" || row.length) pushRow();
+  return rows;
+}
+
+/**
+ * Ett CSV-fält för export, citerat. Text som börjar med = + - @ tab eller CR får ett inledande
+ * apostroftecken så att Excel/LibreOffice inte tolkar den som formel (CSV-injektion).
+ */
+export function csvCell(v: unknown): string {
+  let s = v === null || v === undefined ? "" : String(v);
+  if (typeof v === "string" && /^[=+\-@\t\r]/.test(s)) s = "'" + s;
+  return `"${s.replace(/"/g, '""')}"`;
+}
+
+/* ---------- JSON från databasen ---------- */
+
+/** JSON.parse som returnerar fallback i stället för att kasta vid trasig data. */
+export function safeJson<T>(s: string | null | undefined, fallback: T): T {
+  if (s === null || s === undefined || s === "") return fallback;
+  try {
+    return JSON.parse(s) as T;
+  } catch {
+    console.error("[flygkoll] kunde inte tolka JSON från databasen");
+    return fallback;
+  }
+}

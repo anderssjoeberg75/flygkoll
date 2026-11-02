@@ -6,16 +6,17 @@ import { requireUser, requireWriter } from "@/lib/auth";
 import { db, newId } from "@/lib/db";
 import { droneHours, getDrone } from "@/lib/fleet";
 import { parseLocalStockholm } from "@/lib/format";
+import { CLASS_MARKS, oneOf, optNumber, text } from "@/lib/validate";
 
 function droneVals(fd: FormData) {
   return {
-    name: String(fd.get("name") || "").trim() || "Namnlös drönare",
-    model: String(fd.get("model") || "").trim(),
-    serial: String(fd.get("serial") || "").trim(),
-    mtom_g: Math.round(Number(fd.get("mtom_g")) || 0),
-    class_mark: String(fd.get("class_mark") || "none"),
-    char_dim_m: Number(fd.get("char_dim_m")) || 0.35,
-    notes: String(fd.get("notes") || ""),
+    name: text(fd.get("name"), 200) || "Namnlös drönare",
+    model: text(fd.get("model"), 200),
+    serial: text(fd.get("serial"), 200),
+    mtom_g: Math.round(optNumber(fd.get("mtom_g"), 0, 1_000_000) ?? 0),
+    class_mark: oneOf(fd.get("class_mark"), CLASS_MARKS, "none"),
+    char_dim_m: optNumber(fd.get("char_dim_m"), 0.01, 50) ?? 0.35,
+    notes: text(fd.get("notes"), 10_000),
   };
 }
 

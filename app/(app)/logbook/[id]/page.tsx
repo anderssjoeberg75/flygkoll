@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { requireUser, displayName } from "@/lib/auth";
+import { safeJson } from "@/lib/validate";
 import { db } from "@/lib/db";
 import { fmtDateTime, fmtMinutes } from "@/lib/format";
 import { GeoMap } from "@/components/GeoMap";
@@ -28,7 +29,7 @@ export default async function FlightPage({ params }: { params: Promise<{ id: str
     .get(id, user.org_id) as Flight | undefined;
   if (!f) notFound();
   const crew = db.prepare("SELECT role, name FROM flight_crew WHERE flight_id = ?").all(id) as { role: string; name: string }[];
-  const track = f.track ? (JSON.parse(f.track) as TrackPoint[]) : [];
+  const track = safeJson<TrackPoint[]>(f.track, []);
   const t0 = track[0]?.t ?? 0;
   const canEdit = f.pilot_id === user.id || user.role === "admin";
 
