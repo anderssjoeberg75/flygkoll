@@ -116,7 +116,7 @@ export default async function BriefingPage({ params }: { params: Promise<{ id: s
           </div>
           <div className="card">
             <h2>Vädervarningar (SMHI)</h2>
-            {r.warnings.length === 0 ? <p className="small muted">Inga aktiva varningar för platsen under flygfönstret +6 h.</p> : r.warnings.map((wa, i) => (
+            {r.warnings.length === 0 ? <p className="small muted">Inga aktiva varningar som påverkar drönarflygning (vind, nederbörd, åska, is, sikt, temperatur) för platsen under flygfönstret +6 h.</p> : r.warnings.map((wa, i) => (
               <details key={i} className={`notice ${wa.levelCode === "MESSAGE" ? "n-info" : wa.levelCode === "YELLOW" ? "n-warn" : "n-danger"}`} style={{ marginBottom: 8 }}>
                 <summary><strong style={{ display: "inline" }}>{wa.area}: {wa.level}</strong> – {wa.description}</summary>
                 {wa.details.map((d, j) => <p key={j} className="small"><strong>{d.title}</strong>{d.text}</p>)}

@@ -265,6 +265,18 @@ type SmhiWarning = {
   }[];
 };
 
+/**
+ * Endast varningar som påverkar drönarflygning (vind, nederbörd, åska, is,
+ * sikt, extrem temperatur). Hydrologiska varningar (vattenbrist, höga flöden,
+ * vattenstånd), brandrisk m.m. filtreras bort.
+ */
+const DRONE_RELEVANT = /vind|storm|kuling|orkan|by(ar|ig)|tromb|tornado|åska|regn|skyfall|nederbörd|snö|hagel|is(bildning|beläggning|ing)|underkyl|halka|dimma|sikt|kyla|låga temperatur|höga temperatur|värme/i;
+const DRONE_IRRELEVANT = /vattenbrist|grundvatten|vattendrag|flöde|översvämning|vattenstånd|havsnivå|brand|torka|lavin|issituation|isläge/i;
+
+export function isDroneRelevantWarning(text: string) {
+  return !DRONE_IRRELEVANT.test(text) && DRONE_RELEVANT.test(text);
+}
+
 export async function smhiWarnings(lat: number, lon: number, from: Date, to: Date) {
   const all = await cachedJson<SmhiWarning[]>("https://opendata-download-warnings.smhi.se/ibww/api/version/1/warning.json", HOUR / 4);
   const pt = turf.point([lon, lat]);
@@ -284,6 +296,7 @@ export async function smhiWarnings(lat: number, lon: number, from: Date, to: Dat
         inside = false;
       }
       if (!inside) continue;
+      if (!isDroneRelevantWarning(`${w.event.sv} ${a.eventDescription.sv}`)) continue;
       out.push({
         event: w.event.sv,
         level: a.warningLevel.sv,
