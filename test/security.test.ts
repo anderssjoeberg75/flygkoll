@@ -3,7 +3,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import Database from "better-sqlite3";
 import { pickClientIp, trustedProxyHops } from "@/lib/net";
-import { checkedItems, escapeLike, isUniqueViolation } from "@/lib/validate";
+import { checkedItems, escapeLike, isUniqueViolation, normalizeTrackTimes } from "@/lib/validate";
 import { assessSources, sourceNotices, type SourceStatus } from "@/lib/briefing";
 
 /* ---------- #31: X-Forwarded-For ---------- */
@@ -118,4 +118,33 @@ test("isUniqueViolation känner igen SQLite-konflikten", () => {
   assert.equal(isUniqueViolation(new Error("annat")), false);
   assert.equal(isUniqueViolation(null), false);
   db.close();
+});
+
+/* ---------- #37: tidsstämplar i flygloggar ---------- */
+
+const NOW = Date.UTC(2026, 10, 5, 12);
+const START = Date.UTC(2026, 10, 5, 10);
+
+test("normalizeTrackTimes: Unix-tid behålls, orimliga värden kastas", () => {
+  const pts = [{ t: START }, { t: START + 1000 }, { t: 1e20 }, { t: -5 }, { t: NaN }];
+  assert.deepEqual(normalizeTrackTimes(pts, NaN, NOW).map((p) => p.t), [START, START + 1000]);
+});
+
+test("normalizeTrackTimes: relativa tider räknas från starttiden", () => {
+  // time(millisecond) och radnummer × 1000 från ImportPanel
+  const pts = [{ t: 0, lat: 59 }, { t: 1000, lat: 59.1 }, { t: 2500, lat: 59.2 }];
+  const out = normalizeTrackTimes(pts, START, NOW);
+  assert.deepEqual(out.map((p) => p.t), [START, START + 1000, START + 2500]);
+  assert.equal(out[1].lat, 59.1);
+});
+
+test("normalizeTrackTimes: relativa tider utan starttid räknas från nu", () => {
+  assert.deepEqual(normalizeTrackTimes([{ t: 0 }, { t: 1000 }], NaN, NOW).map((p) => p.t), [NOW, NOW + 1000]);
+  // ogiltig starttid ignoreras också
+  assert.deepEqual(normalizeTrackTimes([{ t: 0 }, { t: 1000 }], 1e20, NOW).map((p) => p.t), [NOW, NOW + 1000]);
+});
+
+test("normalizeTrackTimes: enstaka skräpvärde vänder inte tolkningen", () => {
+  assert.deepEqual(normalizeTrackTimes([{ t: START }, { t: START + 1000 }, { t: 3 }], NaN, NOW).map((p) => p.t), [START, START + 1000]);
+  assert.deepEqual(normalizeTrackTimes([{ t: 0 }, { t: 1000 }, { t: 2e9 * 1000 }], START, NOW).map((p) => p.t), [START, START + 1000]);
 });

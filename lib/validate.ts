@@ -32,6 +32,31 @@ export function checkedItems(v: unknown, n: number): number[] {
   return [...set].sort((a, b) => a - b);
 }
 
+/* ---------- flygloggar ---------- */
+
+/** Tidigaste rimliga tidsstämpel i en flyglogg. */
+export const MIN_TRACK_T = Date.UTC(2000, 0, 1);
+/** Längsta tid från start som en relativ tidsstämpel får ha (ett dygn). */
+const MAX_RELATIVE_T = 864e5;
+
+/** Absolut tidsstämpel i ms inom [år 2000, nu + 1 dygn]. */
+export const validTrackTime = (t: number, now = Date.now()) => Number.isFinite(t) && t >= MIN_TRACK_T && t <= now + 864e5;
+
+/**
+ * Gör loggens tider absoluta och kastar orimliga värden (#37).
+ *
+ * Loggar kan ha Unix-tid (ms) eller tid från start (`time(millisecond)`, eller radnummer × 1000
+ * när tidskolumn saknas). Det som gäller för flest punkter avgör tolkningen. Relativa tider
+ * räknas från `startedAt`, eller från nu om starttid saknas.
+ */
+export function normalizeTrackTimes<P extends { t: number }>(points: P[], startedAt: number, now = Date.now()): P[] {
+  const finite = points.filter((p) => typeof p.t === "number" && Number.isFinite(p.t));
+  const absolute = finite.filter((p) => p.t >= MIN_TRACK_T).length;
+  if (absolute * 2 >= finite.length) return finite.filter((p) => validTrackTime(p.t, now));
+  const base = validTrackTime(startedAt, now) ? startedAt : now;
+  return finite.filter((p) => p.t >= 0 && p.t <= MAX_RELATIVE_T).map((p) => ({ ...p, t: base + p.t }));
+}
+
 /* ---------- lösenord ---------- */
 
 export const MIN_PASSWORD = 10;
