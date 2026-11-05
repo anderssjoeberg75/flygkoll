@@ -4,7 +4,8 @@ import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import { requireWriter } from "@/lib/auth";
 import { db, newId } from "@/lib/db";
-import { CHECKLIST_KINDS, oneOf, safeJson, text } from "@/lib/validate";
+import { getAccessibleBriefing } from "@/lib/access";
+import { CHECKLIST_KINDS, checkedItems, oneOf, safeJson, text } from "@/lib/validate";
 
 function items(fd: FormData) {
   return String(fd.get("items") || "")
@@ -59,22 +60,21 @@ export async function saveRun(checklistId: string, droneId: string | null, check
   const c = db.prepare("SELECT items FROM checklists WHERE id = ? AND org_id = ?").get(checklistId, user.org_id) as { items: string } | undefined;
   if (!c) return { error: "Checklistan finns inte." };
 
-  let validDrone = droneId;
+  let validDrone = typeof droneId === "string" ? droneId : null;
   if (validDrone) {
     const vd = db.prepare("SELECT id FROM drones WHERE id = ? AND org_id = ?").get(validDrone, user.org_id);
     if (!vd) validDrone = null;
   }
 
-  let validBriefing = briefingId || null;
-  if (validBriefing) {
-    const vb = db.prepare("SELECT id FROM briefings WHERE id = ? AND org_id = ?").get(validBriefing, user.org_id);
-    if (!vb) validBriefing = null;
-  }
+  // en privat briefing (shared = 0) får bara ägaren koppla körningar till (#33)
+  const validBriefing = typeof briefingId === "string" && getAccessibleBriefing(user, briefingId) ? briefingId : null;
 
+  // listan från klienten kan innehålla dubbletter och ogiltiga index – räkna bara unika punkter som finns (#32)
   const n = safeJson<string[]>(c.items, []).length;
+  const valid = checkedItems(checked, n);
   const nid = newId();
   db.prepare("INSERT INTO checklist_runs (id, checklist_id, user_id, drone_id, briefing_id, checked, completed) VALUES (?, ?, ?, ?, ?, ?, ?)").run(
-    nid, checklistId, user.id, validDrone, validBriefing, JSON.stringify(checked), checked.length >= n ? 1 : 0
+    nid, checklistId, user.id, validDrone, validBriefing, JSON.stringify(valid), valid.length === n ? 1 : 0
   );
   revalidatePath(`/checklists/${checklistId}`);
   return { ok: true, id: nid };

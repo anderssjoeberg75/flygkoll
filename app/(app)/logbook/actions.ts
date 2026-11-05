@@ -6,7 +6,8 @@ import { requireWriter, displayName } from "@/lib/auth";
 import { db, newId } from "@/lib/db";
 import { parseLocalStockholm } from "@/lib/format";
 import { FLIGHT_TYPES, oneOf, optNumber, parseCsv, text } from "@/lib/validate";
-import { reverseGeocode } from "@/lib/sources";
+import { reverseGeocode, within } from "@/lib/sources";
+import { getAccessibleBriefing } from "@/lib/access";
 
 type CrewIn = { role: string; userId?: string; name?: string };
 
@@ -35,8 +36,8 @@ export async function saveFlight(fd: FormData) {
 
   // Kontrollera om flygningen redan finns och tillhör organisationen (#7)
   const existing = rawId
-    ? (db.prepare("SELECT id, pilot_id FROM flights WHERE id = ? AND org_id = ?").get(rawId, user.org_id) as
-        | { id: string; pilot_id: string }
+    ? (db.prepare("SELECT id, pilot_id, briefing_id FROM flights WHERE id = ? AND org_id = ?").get(rawId, user.org_id) as
+        | { id: string; pilot_id: string; briefing_id: string | null }
         | undefined)
     : undefined;
 
@@ -58,12 +59,11 @@ export async function saveFlight(fd: FormData) {
     if (!valid) droneId = null;
   }
 
-  // Validera att briefingen tillhör organisationen (#7)
-  let briefingId = String(fd.get("briefing_id") || "").trim() || null;
-  if (briefingId) {
-    const valid = db.prepare("SELECT id FROM briefings WHERE id = ? AND org_id = ?").get(briefingId, user.org_id);
-    if (!valid) briefingId = null;
-  }
+  // Briefingen måste tillhöra organisationen och vara egen eller delad (#7, #33)
+  const rawBriefing = String(fd.get("briefing_id") || "").trim() || null;
+  // En befintlig koppling behålls även om briefingen är någon annans privata (t.ex. när admin redigerar).
+  const keepsLink = !!existing && rawBriefing !== null && rawBriefing === existing.briefing_id;
+  const briefingId = keepsLink || getAccessibleBriefing(user, rawBriefing) ? rawBriefing : null;
 
   const lat = optNumber(fd.get("lat"), -90, 90), lon = optNumber(fd.get("lon"), -180, 180);
   const vals = {
@@ -157,6 +157,9 @@ const MAX_TRACK_POINTS = 50_000;
 // exporten skyddar fält som börjar med = + - @ med ett apostroftecken – ta bort det vid återimport
 const unescapeCell = (s: string) => (/^'[=+\-@]/.test(s) ? s.slice(1) : s);
 const numOrNull = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : null);
+// rimliga tidsstämplar för en flyglogg: från år 2000 till ett dygn framåt (#37)
+const MIN_TRACK_T = Date.UTC(2000, 0, 1);
+const validTrackTime = (t: number) => Number.isFinite(t) && t >= MIN_TRACK_T && t <= Date.now() + 864e5;
 
 export async function importTrack(payload: { points: TrackPoint[]; droneId: string | null; fileName: string; startedAt: string | null }) {
   const user = await requireWriter();
@@ -164,9 +167,11 @@ export async function importTrack(payload: { points: TrackPoint[]; droneId: stri
   if (!payload || !Array.isArray(payload.points)) return { error: "Ogiltig logg." };
   if (payload.points.length > MAX_TRACK_POINTS) return { error: `Loggen har för många punkter (max ${MAX_TRACK_POINTS}).` };
   const pts = payload.points
-    .filter((p) => p && Number.isFinite(p.t) && Number.isFinite(p.lat) && Number.isFinite(p.lon) && Math.abs(p.lat) <= 90 && Math.abs(p.lon) <= 180 && !(p.lat === 0 && p.lon === 0))
+    .filter((p) => p && typeof p.t === "number" && validTrackTime(p.t) && Number.isFinite(p.lat) && Number.isFinite(p.lon) && Math.abs(p.lat) <= 90 && Math.abs(p.lon) <= 180 && !(p.lat === 0 && p.lon === 0))
     .map((p) => ({ t: p.t, lat: p.lat, lon: p.lon, alt: numOrNull(p.alt), bat: numOrNull(p.bat) }));
   if (pts.length < 2) return { error: "Hittade inga giltiga GPS-punkter i loggen." };
+  // punkterna ska komma i tidsordning för att varaktighet och spår ska bli rätt
+  pts.sort((a, b) => a.t - b.t);
 
   let validDrone = typeof payload.droneId === "string" ? payload.droneId : null;
   if (validDrone) {
@@ -188,10 +193,11 @@ export async function importTrack(payload: { points: TrackPoint[]; droneId: stri
   // gallra spåret till max ~1500 punkter
   const step = Math.max(1, Math.ceil(pts.length / 1500));
   const track = pts.filter((_, i) => i % step === 0);
-  const startedRaw = typeof payload.startedAt === "string" ? new Date(payload.startedAt) : new Date(pts[0].t);
-  const started = isNaN(startedRaw.getTime()) ? new Date(pts[0].t) : startedRaw;
+  const startedRaw = typeof payload.startedAt === "string" ? new Date(payload.startedAt).getTime() : NaN;
+  const started = new Date(validTrackTime(startedRaw) ? startedRaw : pts[0].t);
   const id = newId();
-  const place = await reverseGeocode(pts[0].lat, pts[0].lon).catch(() => "");
+  // platsnamnet är bara en bekvämlighet – vänta inte på en full Nominatim-kö (#35)
+  const place = await within(reverseGeocode(pts[0].lat, pts[0].lon), 4000, "Platsnamn dröjer").catch(() => "");
   db.prepare(
     `INSERT INTO flights (id, org_id, pilot_id, drone_id, type, started_at, duration_min, location, lat, lon, max_alt_m, distance_m, battery_start, battery_end, track, source, notes)
      VALUES (?, ?, ?, ?, 'standard', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'log', ?)`

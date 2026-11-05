@@ -3,6 +3,7 @@ import { notFound } from "next/navigation";
 import { requireUser, displayName } from "@/lib/auth";
 import { safeJson } from "@/lib/validate";
 import { db } from "@/lib/db";
+import { getAccessibleBriefing } from "@/lib/access";
 import { fmtDateTime, fmtMinutes } from "@/lib/format";
 import { GeoMap } from "@/components/GeoMap";
 import { LineChart } from "@/components/LineChart";
@@ -33,20 +34,17 @@ export default async function FlightPage({ params }: { params: Promise<{ id: str
   const t0 = track[0]?.t ?? 0;
   const canEdit = f.pilot_id === user.id || user.role === "admin";
 
-  const briefing = f.briefing_id
-    ? (db.prepare("SELECT id, name, status, flight_time FROM briefings WHERE id = ?").get(f.briefing_id) as
-        | { id: string; name: string; status: string; flight_time: string }
-        | undefined)
-    : null;
+  // en kopplad briefing visas bara om den är egen eller delad (#33)
+  const briefing = getAccessibleBriefing<{ id: string; name: string; status: string; flight_time: string }>(user, f.briefing_id, "id, name, status, flight_time");
   const checklistRuns = db
     .prepare(
       `SELECT r.*, c.name AS checklist_name
        FROM checklist_runs r
        JOIN checklists c ON c.id = r.checklist_id
-       WHERE r.flight_id = ? OR (r.briefing_id IS NOT NULL AND r.briefing_id = ?)
+       WHERE c.org_id = ? AND (r.flight_id = ? OR (r.briefing_id IS NOT NULL AND r.briefing_id = ?))
        ORDER BY r.created_at DESC`
     )
-    .all(id, f.briefing_id ?? "") as { id: string; checklist_name: string; completed: number; checked: string; created_at: string }[];
+    .all(user.org_id, id, briefing?.id ?? "") as { id: string; checklist_name: string; completed: number; checked: string; created_at: string }[];
 
   return (
     <>

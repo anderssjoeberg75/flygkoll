@@ -2,10 +2,10 @@ import Link from "next/link";
 import { requireUser } from "@/lib/auth";
 import { safeJson } from "@/lib/validate";
 import { db } from "@/lib/db";
-import { orgMembers } from "@/lib/members";
+import { disabledMembers, orgMembers } from "@/lib/members";
 import { fmtMinutes } from "@/lib/format";
 import { StateForm } from "@/components/StateForm";
-import { saveOrg, addMember, setRole, removeMember, addZone, removeZone } from "../settings/actions";
+import { saveOrg, addMember, setRole, removeMember, reactivateMember, addZone, removeZone } from "../settings/actions";
 
 const ROLE: Record<string, string> = { admin: "Administratör", pilot: "Pilot", viewer: "Läsare" };
 
@@ -13,15 +13,17 @@ export default async function Org() {
   const user = await requireUser();
   const isAdmin = user.role === "admin";
   const members = orgMembers(user.org_id);
+  const inactive = isAdmin ? disabledMembers(user.org_id) : [];
   const zones = db.prepare("SELECT * FROM zones WHERE org_id = ? ORDER BY name").all(user.org_id) as { id: string; name: string; lat: number; lon: number; radius_m: number }[];
 
   // analys
   const monthly = db
     .prepare("SELECT substr(created_at,1,7) m, COUNT(*) n FROM briefings WHERE org_id = ? AND created_at >= date('now','-12 months') GROUP BY m ORDER BY m")
     .all(user.org_id) as { m: string; n: number }[];
+  // platsnamn visas bara från egna och delade briefingar – privata namn ska inte läcka (#36)
   const places = db
-    .prepare("SELECT name, COUNT(*) n FROM briefings WHERE org_id = ? GROUP BY name ORDER BY n DESC LIMIT 8")
-    .all(user.org_id) as { name: string; n: number }[];
+    .prepare("SELECT name, COUNT(*) n FROM briefings WHERE org_id = ? AND (user_id = ? OR shared = 1) GROUP BY name ORDER BY n DESC LIMIT 8")
+    .all(user.org_id, user.id) as { name: string; n: number }[];
   const statusDist = db
     .prepare("SELECT status, COUNT(*) n FROM briefings WHERE org_id = ? GROUP BY status")
     .all(user.org_id) as { status: string; n: number }[];
@@ -126,6 +128,28 @@ export default async function Org() {
             </tbody>
           </table>
         </div>
+        {inactive.length > 0 && (
+          <>
+            <h3 style={{ marginTop: 16 }}>Inaktiverade medlemmar</h3>
+            <p className="small muted" style={{ margin: 0 }}>Kan inte logga in. Loggbok och historik finns kvar och följer med vid återaktivering.</p>
+            <div className="table-wrap">
+              <table>
+                <thead><tr><th>Namn</th><th>E-post</th><th>Roll</th><th>Inaktiverad</th><th></th></tr></thead>
+                <tbody>
+                  {inactive.map((m) => (
+                    <tr key={m.id}>
+                      <td>{m.name}</td>
+                      <td>{m.email}</td>
+                      <td>{ROLE[m.role]}</td>
+                      <td className="small">{m.disabled_at.slice(0, 10)}</td>
+                      <td><form action={reactivateMember.bind(null, m.id)}><button className="btn secondary small">Återaktivera</button></form></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </>
+        )}
         {isAdmin && (
           <StateForm action={addMember} submit="Lägg till medlem" className="stack" >
             <h3 style={{ marginTop: 16 }}>Lägg till medlem</h3>

@@ -49,7 +49,7 @@ After=network.target
 
 [Service]
 WorkingDirectory=/opt/flygkoll
-Environment=NODE_ENV=production TZ=Europe/Stockholm PORT=3000
+Environment=NODE_ENV=production TZ=Europe/Stockholm PORT=3000 FLYGKOLL_TRUST_PROXY=1
 ExecStart=/usr/bin/npm start
 Restart=on-failure
 User=flygkoll
@@ -61,9 +61,20 @@ WantedBy=multi-user.target
 Kör bakom en reverse proxy med HTTPS (Caddy/nginx). Sessionskakan sätts som `Secure` i produktion;
 kör du utan HTTPS på ditt LAN, sätt `FLYGKOLL_INSECURE_COOKIE=1`.
 
-Proxyn ska sätta `X-Forwarded-For` (Caddy gör det automatiskt; i nginx `proxy_set_header X-Forwarded-For $remote_addr;`).
-Adressen används för att spärra upprepade felaktiga inloggningar per e-post och IP, så att en angripare inte kan
-låsa ute en användare. Spärrarna lagras i databasen och gäller även efter omstart.
+Felaktiga inloggningar spärras per e-post (30 försök/15 min, oavsett adress) och – när klientens adress är känd –
+även per e-post och IP (10/15 min) och per IP (50/15 min). Spärrarna lagras i databasen och gäller även efter omstart.
+
+Klientens adress läses från `X-Forwarded-For` **bara** om du anger att appen står bakom en betrodd reverse proxy:
+
+```bash
+FLYGKOLL_TRUST_PROXY=1   # antal proxies framför appen (oftast 1)
+```
+
+Utan variabeln ignoreras `X-Forwarded-For`/`X-Real-IP` helt, eftersom vem som helst kan skicka dem. Då gäller bara
+spärren per e-post och en gemensam gräns för nya registreringar. Med variabeln används den adress som den betrodda
+proxyn själv har lagt till (längst till höger), så headern måste sättas av proxyn: Caddy gör det automatiskt; i nginx
+`proxy_set_header X-Forwarded-For $remote_addr;` (skriver över) eller `$proxy_add_x_forwarded_for` (lägger till sist).
+Exponera inte appens port direkt mot internet när `FLYGKOLL_TRUST_PROXY` är satt.
 
 Säkerhet i korthet: lösenord måste vara minst 10 tecken och inte vara vanliga eller innehålla e-postadressen.
 Appen skickar en strikt Content-Security-Policy och laddar inga resurser från tredje part förutom kartplattor –

@@ -4,6 +4,7 @@ import util from "node:util";
 import { cookies, headers } from "next/headers";
 import { redirect } from "next/navigation";
 import { db } from "./db";
+import { pickClientIp, trustedProxyHops } from "./net";
 
 const COOKIE = "flygkoll_session";
 const SESSION_DAYS = 30;
@@ -31,11 +32,16 @@ export type User = {
   disabled_at?: string | null;
 };
 
-/* ---------- Klientens IP (för spärr av försök, #27) ---------- */
-/** Första adressen i X-Forwarded-For (sätts av reverse proxyn), annars X-Real-IP. */
-export async function clientIp(): Promise<string> {
+/* ---------- Klientens IP (för spärr av försök, #27, #31) ---------- */
+/**
+ * Klientens adress från X-Forwarded-For/X-Real-IP – men bara om FLYGKOLL_TRUST_PROXY anger att en
+ * reverse proxy står framför appen. Annars null: utan proxy kan klienten själv skicka valfri header.
+ */
+export async function clientIp(): Promise<string | null> {
+  const hops = trustedProxyHops(process.env.FLYGKOLL_TRUST_PROXY);
+  if (hops === 0) return null;
   const h = await headers();
-  return h.get("x-forwarded-for")?.split(",")[0].trim() || h.get("x-real-ip")?.trim() || "okänd";
+  return pickClientIp(h.get("x-forwarded-for"), h.get("x-real-ip"), hops);
 }
 
 /* ---------- Asynkron Scrypt (#6) ---------- */
@@ -111,6 +117,15 @@ export async function getUser(): Promise<User | null> {
     )
     .get(token, new Date().toISOString()) as User | undefined;
   return row ?? null;
+}
+
+/**
+ * För API-routes: inloggad användare, eller null. Konton med tillfälligt lösenord räknas som
+ * ej inloggade tills lösenordet är bytt, precis som i requireUser (#37).
+ */
+export async function getActiveUser(): Promise<User | null> {
+  const u = await getUser();
+  return u && u.must_change_password !== 1 ? u : null;
 }
 
 /* ---------- Behörigheter (#4, #20) ---------- */

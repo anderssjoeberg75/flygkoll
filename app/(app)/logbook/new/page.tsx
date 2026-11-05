@@ -1,5 +1,5 @@
 import { requireUser } from "@/lib/auth";
-import { db } from "@/lib/db";
+import { getAccessibleBriefing } from "@/lib/access";
 import { listDrones } from "@/lib/fleet";
 import { orgMembers } from "@/lib/members";
 import { toLocalInput } from "@/lib/format";
@@ -8,11 +8,9 @@ import { FlightForm } from "@/components/FlightForm";
 export default async function NewFlight({ searchParams }: { searchParams: Promise<{ briefing?: string }> }) {
   const user = await requireUser();
   const { briefing } = await searchParams;
-  const b = briefing
-    ? (db.prepare("SELECT id, name, lat, lon, flight_time, drone_id FROM briefings WHERE id = ? AND org_id = ?").get(briefing, user.org_id) as
-        | { id: string; name: string; lat: number; lon: number; flight_time: string; drone_id: string | null }
-        | undefined)
-    : undefined;
+  const b = getAccessibleBriefing<{ id: string; name: string; lat: number; lon: number; flight_time: string; drone_id: string | null }>(
+    user, briefing, "id, name, lat, lon, flight_time, drone_id"
+  );
   return (
     <>
       <div className="page-head"><div><h1>Ny flygning</h1>{b && <p className="muted" style={{ margin: 0 }}>Kopplad till briefing {b.name}</p>}</div></div>

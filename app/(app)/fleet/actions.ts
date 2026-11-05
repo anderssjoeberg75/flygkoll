@@ -50,11 +50,12 @@ export async function archiveDrone(id: string) {
 export async function addSchedule(droneId: string, fd: FormData) {
   const user = await requireWriter();
   if (!getDrone(user.org_id, droneId)) return;
-  const days = Number(fd.get("interval_days")) || null;
-  const hours = Number(fd.get("interval_hours")) || null;
+  // rimliga intervall: högst tio år respektive 10 000 flygtimmar (#32)
+  const days = optNumber(fd.get("interval_days"), 1, 3650);
+  const hours = optNumber(fd.get("interval_hours"), 0.1, 10_000);
   if (!days && !hours) return;
   db.prepare("INSERT INTO maint_schedules (id, drone_id, name, interval_days, interval_hours, last_done_at, last_done_hours) VALUES (?, ?, ?, ?, ?, ?, ?)").run(
-    newId(), droneId, String(fd.get("name") || "Service"), days, hours, new Date().toISOString(), droneHours(droneId)
+    newId(), droneId, text(fd.get("name"), 200) || "Service", days ? Math.round(days) : null, hours, new Date().toISOString(), droneHours(droneId)
   );
   revalidatePath(`/fleet/${droneId}`);
 }
@@ -70,13 +71,15 @@ export async function removeSchedule(droneId: string, scheduleId: string) {
 export async function logMaintenance(droneId: string, fd: FormData) {
   const user = await requireWriter();
   if (!getDrone(user.org_id, droneId)) return;
-  const scheduleId = String(fd.get("schedule_id") || "") || null;
-  const wt = String(fd.get("work_type_free") || "").trim() || String(fd.get("work_type") || "").trim() || "Service";
+  // schemat måste höra till samma drönare – annars kan loggen peka på en annan organisations schema (#37)
+  const rawSchedule = String(fd.get("schedule_id") || "") || null;
+  const scheduleId = rawSchedule && db.prepare("SELECT 1 FROM maint_schedules WHERE id = ? AND drone_id = ?").get(rawSchedule, droneId) ? rawSchedule : null;
+  const wt = text(fd.get("work_type_free"), 200) || text(fd.get("work_type"), 200) || "Service";
   const rawDone = fd.get("done_at") ? String(fd.get("done_at")) : "";
   const parsedDone = rawDone ? parseLocalStockholm(rawDone.includes("T") ? rawDone : `${rawDone}T12:00`) : new Date();
   const done = isNaN(parsedDone.getTime()) ? new Date() : parsedDone;
   db.prepare("INSERT INTO maint_logs (id, drone_id, schedule_id, user_id, work_type, done_at, notes) VALUES (?, ?, ?, ?, ?, ?, ?)").run(
-    newId(), droneId, scheduleId, user.id, wt, done.toISOString(), String(fd.get("notes") || "")
+    newId(), droneId, scheduleId, user.id, wt, done.toISOString(), text(fd.get("notes"), 10_000)
   );
   if (scheduleId) {
     db.prepare("UPDATE maint_schedules SET last_done_at = ?, last_done_hours = ? WHERE id = ? AND drone_id = ?").run(done.toISOString(), droneHours(droneId), scheduleId, droneId);
@@ -86,7 +89,7 @@ export async function logMaintenance(droneId: string, fd: FormData) {
 
 export async function addWorkType(fd: FormData) {
   const user = await requireWriter();
-  const name = String(fd.get("name") || "").trim();
+  const name = text(fd.get("name"), 200);
   if (name) db.prepare("INSERT INTO work_types (id, org_id, name) VALUES (?, ?, ?)").run(newId(), user.org_id, name);
   revalidatePath("/fleet");
 }
