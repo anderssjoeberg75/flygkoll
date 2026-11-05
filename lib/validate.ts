@@ -60,6 +60,24 @@ export function normalizeTrackTimes<P extends { t: number }>(points: P[], starte
   return relative.map((p) => ({ ...p, t: base + p.t }));
 }
 
+const numOrNull = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : null);
+
+/**
+ * Städar punkterna från en flyglogg som klienten skickat: tar bort oanvändbara GPS-punkter
+ * (saknade/ogiltiga koordinater, 0,0) innan tidsformatet avgörs, så att bara riktiga punkter
+ * röstar. Därefter normaliseras tiderna och punkterna sorteras i tidsordning.
+ */
+export function cleanTrackPoints(points: unknown, startedAt: number, now = Date.now()) {
+  if (!Array.isArray(points)) return [];
+  const gps = (points as { t?: unknown; lat?: unknown; lon?: unknown; alt?: unknown; bat?: unknown }[])
+    .filter((p): p is { t: number; lat: number; lon: number; alt?: unknown; bat?: unknown } =>
+      !!p && typeof p.t === "number" && typeof p.lat === "number" && typeof p.lon === "number" &&
+      Number.isFinite(p.lat) && Number.isFinite(p.lon) && Math.abs(p.lat) <= 90 && Math.abs(p.lon) <= 180 && !(p.lat === 0 && p.lon === 0));
+  return normalizeTrackTimes(gps, startedAt, now)
+    .map((p) => ({ t: p.t, lat: p.lat, lon: p.lon, alt: numOrNull(p.alt), bat: numOrNull(p.bat) }))
+    .sort((a, b) => a.t - b.t);
+}
+
 /* ---------- lösenord ---------- */
 
 export const MIN_PASSWORD = 10;

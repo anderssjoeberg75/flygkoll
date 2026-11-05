@@ -3,7 +3,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import Database from "better-sqlite3";
 import { pickClientIp, trustedProxyHops } from "@/lib/net";
-import { checkedItems, escapeLike, isUniqueViolation, normalizeTrackTimes } from "@/lib/validate";
+import { checkedItems, cleanTrackPoints, escapeLike, isUniqueViolation, normalizeTrackTimes } from "@/lib/validate";
 import { assessSources, sourceNotices, type SourceStatus } from "@/lib/briefing";
 
 /* ---------- #31: X-Forwarded-For ---------- */
@@ -153,4 +153,25 @@ test("normalizeTrackTimes: ogiltiga värden röstar inte om tolkningen", () => {
   // två giltiga Unix-tider och tre trasiga rader – Unix-tiderna ska behållas
   assert.deepEqual(normalizeTrackTimes([{ t: START }, { t: START + 1000 }, { t: -1 }, { t: -2 }, { t: -3 }], NaN, NOW).map((p) => p.t), [START, START + 1000]);
   assert.deepEqual(normalizeTrackTimes([{ t: 0 }, { t: 1000 }, { t: 1e20 }, { t: 1e21 }, { t: -1 }], START, NOW).map((p) => p.t), [START, START + 1000]);
+});
+
+test("cleanTrackPoints: oanvändbara GPS-punkter röstar inte om tidsformatet", () => {
+  // tre rader utan tid och med 0,0 (får reservtid i × 1000) följt av två riktiga punkter
+  const pts = [
+    { t: 0, lat: 0, lon: 0, alt: null, bat: null },
+    { t: 1000, lat: 0, lon: 0, alt: null, bat: null },
+    { t: 2000, lat: 0, lon: 0, alt: null, bat: null },
+    { t: START, lat: 59.3, lon: 18.0, alt: 10, bat: 90 },
+    { t: START + 1000, lat: 59.31, lon: 18.01, alt: 12, bat: 89 },
+  ];
+  const out = cleanTrackPoints(pts, NaN, NOW);
+  assert.deepEqual(out.map((p) => p.t), [START, START + 1000]);
+  assert.equal(out[0].alt, 10);
+});
+
+test("cleanTrackPoints: sorterar och tål skräp i payloaden", () => {
+  const out = cleanTrackPoints([null, "x", { t: START + 1000, lat: 59, lon: 18 }, { t: START, lat: 59, lon: 18, alt: "hög" }, { t: START, lat: 200, lon: 18 }], NaN, NOW);
+  assert.deepEqual(out.map((p) => p.t), [START, START + 1000]);
+  assert.equal(out[0].alt, null);
+  assert.deepEqual(cleanTrackPoints("inte en lista", NaN, NOW), []);
 });
