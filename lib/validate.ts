@@ -32,6 +32,52 @@ export function checkedItems(v: unknown, n: number): number[] {
   return [...set].sort((a, b) => a - b);
 }
 
+/* ---------- flygloggar ---------- */
+
+/** Tidigaste rimliga tidsstämpel i en flyglogg. */
+export const MIN_TRACK_T = Date.UTC(2000, 0, 1);
+/** Längsta tid från start som en relativ tidsstämpel får ha (ett dygn). */
+const MAX_RELATIVE_T = 864e5;
+
+/** Absolut tidsstämpel i ms inom [år 2000, nu + 1 dygn]. */
+export const validTrackTime = (t: number, now = Date.now()) => Number.isFinite(t) && t >= MIN_TRACK_T && t <= now + 864e5;
+
+/**
+ * Gör loggens tider absoluta och kastar orimliga värden (#37).
+ *
+ * Loggar kan ha Unix-tid (ms) eller tid från start (`time(millisecond)`, eller radnummer × 1000
+ * när tidskolumn saknas). Den tolkning som ger flest giltiga punkter vinner. Relativa tider
+ * räknas från `startedAt`, eller från nu om starttid saknas.
+ */
+export function normalizeTrackTimes<P extends { t: number }>(points: P[], startedAt: number, now = Date.now()): P[] {
+  const isAbsolute = (p: P) => typeof p.t === "number" && validTrackTime(p.t, now);
+  const isRelative = (p: P) => typeof p.t === "number" && p.t >= 0 && p.t <= MAX_RELATIVE_T;
+  // bara giltiga värden röstar – trasiga rader ska inte kunna vända tolkningen
+  const absolute = points.filter(isAbsolute);
+  const relative = points.filter(isRelative);
+  if (absolute.length >= relative.length) return absolute;
+  const base = validTrackTime(startedAt, now) ? startedAt : now;
+  return relative.map((p) => ({ ...p, t: base + p.t }));
+}
+
+const numOrNull = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : null);
+
+/**
+ * Städar punkterna från en flyglogg som klienten skickat: tar bort oanvändbara GPS-punkter
+ * (saknade/ogiltiga koordinater, 0,0) innan tidsformatet avgörs, så att bara riktiga punkter
+ * röstar. Därefter normaliseras tiderna och punkterna sorteras i tidsordning.
+ */
+export function cleanTrackPoints(points: unknown, startedAt: number, now = Date.now()) {
+  if (!Array.isArray(points)) return [];
+  const gps = (points as { t?: unknown; lat?: unknown; lon?: unknown; alt?: unknown; bat?: unknown }[])
+    .filter((p): p is { t: number; lat: number; lon: number; alt?: unknown; bat?: unknown } =>
+      !!p && typeof p.t === "number" && typeof p.lat === "number" && typeof p.lon === "number" &&
+      Number.isFinite(p.lat) && Number.isFinite(p.lon) && Math.abs(p.lat) <= 90 && Math.abs(p.lon) <= 180 && !(p.lat === 0 && p.lon === 0));
+  return normalizeTrackTimes(gps, startedAt, now)
+    .map((p) => ({ t: p.t, lat: p.lat, lon: p.lon, alt: numOrNull(p.alt), bat: numOrNull(p.bat) }))
+    .sort((a, b) => a.t - b.t);
+}
+
 /* ---------- lösenord ---------- */
 
 export const MIN_PASSWORD = 10;

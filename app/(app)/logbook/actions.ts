@@ -5,7 +5,7 @@ import { revalidatePath } from "next/cache";
 import { requireWriter, displayName } from "@/lib/auth";
 import { db, newId } from "@/lib/db";
 import { parseLocalStockholm } from "@/lib/format";
-import { FLIGHT_TYPES, oneOf, optNumber, parseCsv, text } from "@/lib/validate";
+import { FLIGHT_TYPES, cleanTrackPoints, oneOf, optNumber, parseCsv, text, validTrackTime } from "@/lib/validate";
 import { reverseGeocode, within } from "@/lib/sources";
 import { getAccessibleBriefing } from "@/lib/access";
 
@@ -156,22 +156,16 @@ const MAX_CSV_ROWS = 20_000;
 const MAX_TRACK_POINTS = 50_000;
 // exporten skyddar fält som börjar med = + - @ med ett apostroftecken – ta bort det vid återimport
 const unescapeCell = (s: string) => (/^'[=+\-@]/.test(s) ? s.slice(1) : s);
-const numOrNull = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : null);
-// rimliga tidsstämplar för en flyglogg: från år 2000 till ett dygn framåt (#37)
-const MIN_TRACK_T = Date.UTC(2000, 0, 1);
-const validTrackTime = (t: number) => Number.isFinite(t) && t >= MIN_TRACK_T && t <= Date.now() + 864e5;
 
 export async function importTrack(payload: { points: TrackPoint[]; droneId: string | null; fileName: string; startedAt: string | null }) {
   const user = await requireWriter();
   // payloaden kommer från klienten: kontrollera form och storlek (#28)
   if (!payload || !Array.isArray(payload.points)) return { error: "Ogiltig logg." };
   if (payload.points.length > MAX_TRACK_POINTS) return { error: `Loggen har för många punkter (max ${MAX_TRACK_POINTS}).` };
-  const pts = payload.points
-    .filter((p) => p && typeof p.t === "number" && validTrackTime(p.t) && Number.isFinite(p.lat) && Number.isFinite(p.lon) && Math.abs(p.lat) <= 90 && Math.abs(p.lon) <= 180 && !(p.lat === 0 && p.lon === 0))
-    .map((p) => ({ t: p.t, lat: p.lat, lon: p.lon, alt: numOrNull(p.alt), bat: numOrNull(p.bat) }));
+  const startedRaw = typeof payload.startedAt === "string" ? new Date(payload.startedAt).getTime() : NaN;
+  // oanvändbara GPS-punkter bort, relativa tider absoluta, orimliga tidsstämplar bort (#37)
+  const pts = cleanTrackPoints(payload.points, startedRaw);
   if (pts.length < 2) return { error: "Hittade inga giltiga GPS-punkter i loggen." };
-  // punkterna ska komma i tidsordning för att varaktighet och spår ska bli rätt
-  pts.sort((a, b) => a.t - b.t);
 
   let validDrone = typeof payload.droneId === "string" ? payload.droneId : null;
   if (validDrone) {
@@ -193,7 +187,6 @@ export async function importTrack(payload: { points: TrackPoint[]; droneId: stri
   // gallra spåret till max ~1500 punkter
   const step = Math.max(1, Math.ceil(pts.length / 1500));
   const track = pts.filter((_, i) => i % step === 0);
-  const startedRaw = typeof payload.startedAt === "string" ? new Date(payload.startedAt).getTime() : NaN;
   const started = new Date(validTrackTime(startedRaw) ? startedRaw : pts[0].t);
   const id = newId();
   // platsnamnet är bara en bekvämlighet – vänta inte på en full Nominatim-kö (#35)
