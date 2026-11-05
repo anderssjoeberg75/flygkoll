@@ -46,15 +46,18 @@ export const validTrackTime = (t: number, now = Date.now()) => Number.isFinite(t
  * Gör loggens tider absoluta och kastar orimliga värden (#37).
  *
  * Loggar kan ha Unix-tid (ms) eller tid från start (`time(millisecond)`, eller radnummer × 1000
- * när tidskolumn saknas). Det som gäller för flest punkter avgör tolkningen. Relativa tider
+ * när tidskolumn saknas). Den tolkning som ger flest giltiga punkter vinner. Relativa tider
  * räknas från `startedAt`, eller från nu om starttid saknas.
  */
 export function normalizeTrackTimes<P extends { t: number }>(points: P[], startedAt: number, now = Date.now()): P[] {
-  const finite = points.filter((p) => typeof p.t === "number" && Number.isFinite(p.t));
-  const absolute = finite.filter((p) => p.t >= MIN_TRACK_T).length;
-  if (absolute * 2 >= finite.length) return finite.filter((p) => validTrackTime(p.t, now));
+  const isAbsolute = (p: P) => typeof p.t === "number" && validTrackTime(p.t, now);
+  const isRelative = (p: P) => typeof p.t === "number" && p.t >= 0 && p.t <= MAX_RELATIVE_T;
+  // bara giltiga värden röstar – trasiga rader ska inte kunna vända tolkningen
+  const absolute = points.filter(isAbsolute);
+  const relative = points.filter(isRelative);
+  if (absolute.length >= relative.length) return absolute;
   const base = validTrackTime(startedAt, now) ? startedAt : now;
-  return finite.filter((p) => p.t >= 0 && p.t <= MAX_RELATIVE_T).map((p) => ({ ...p, t: base + p.t }));
+  return relative.map((p) => ({ ...p, t: base + p.t }));
 }
 
 /* ---------- lösenord ---------- */

@@ -148,3 +148,9 @@ test("normalizeTrackTimes: enstaka skräpvärde vänder inte tolkningen", () => 
   assert.deepEqual(normalizeTrackTimes([{ t: START }, { t: START + 1000 }, { t: 3 }], NaN, NOW).map((p) => p.t), [START, START + 1000]);
   assert.deepEqual(normalizeTrackTimes([{ t: 0 }, { t: 1000 }, { t: 2e9 * 1000 }], START, NOW).map((p) => p.t), [START, START + 1000]);
 });
+
+test("normalizeTrackTimes: ogiltiga värden röstar inte om tolkningen", () => {
+  // två giltiga Unix-tider och tre trasiga rader – Unix-tiderna ska behållas
+  assert.deepEqual(normalizeTrackTimes([{ t: START }, { t: START + 1000 }, { t: -1 }, { t: -2 }, { t: -3 }], NaN, NOW).map((p) => p.t), [START, START + 1000]);
+  assert.deepEqual(normalizeTrackTimes([{ t: 0 }, { t: 1000 }, { t: 1e20 }, { t: 1e21 }, { t: -1 }], START, NOW).map((p) => p.t), [START, START + 1000]);
+});
