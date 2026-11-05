@@ -4,7 +4,7 @@ import { redirect } from "next/navigation";
 import { db, newId, seedOrg } from "@/lib/db";
 import { clientIp, createSession, destroySession, hashPassword, verifyPassword } from "@/lib/auth";
 import { blockedFor, hit, reset, type Limit } from "@/lib/ratelimit";
-import { isEmail, passwordProblem, text } from "@/lib/validate";
+import { isEmail, isUniqueViolation, passwordProblem, text } from "@/lib/validate";
 
 export type AuthState = { error?: string };
 
@@ -12,13 +12,19 @@ const MIN = 60e3;
 // en riktig hashsträng så att verifieringen tar lika lång tid när e-posten inte finns (#27)
 const DUMMY_HASH = `scrypt$${"a1".repeat(16)}$${"b2".repeat(64)}`;
 
-function loginLimits(email: string, ip: string): Limit[] {
-  return [
-    // per e-post OCH IP: en angripare kan inte låsa ut en användare från andra adresser
-    { key: `login:${email}|${ip}`, max: 10, windowMs: 15 * MIN },
-    // per IP: stoppar gissning mot många konton
-    { key: `login-ip:${ip}`, max: 50, windowMs: 15 * MIN },
+function loginLimits(email: string, ip: string | null): Limit[] {
+  const limits: Limit[] = [
+    // enbart per e-post, oberoende av IP: gäller även om adressen är okänd eller förfalskad (#31).
+    // Högre tröskel så att en angripare inte i onödan låser ute kontoinnehavaren.
+    { key: `login-email:${email}`, max: 30, windowMs: 15 * MIN },
   ];
+  if (ip) {
+    // per e-post OCH IP: en angripare kan inte låsa ut en användare från andra adresser
+    limits.push({ key: `login:${email}|${ip}`, max: 10, windowMs: 15 * MIN });
+    // per IP: stoppar gissning mot många konton
+    limits.push({ key: `login-ip:${ip}`, max: 50, windowMs: 15 * MIN });
+  }
+  return limits;
 }
 
 const waitText = (ms: number) => `Försök igen om ${Math.max(1, Math.ceil(ms / MIN))} minuter.`;
@@ -48,7 +54,8 @@ export async function login(_: AuthState, fd: FormData): Promise<AuthState> {
     return { error: "Detta konto har inaktiverats. Kontakta administratören för din organisation." };
   }
 
-  reset([limits[0].key]);
+  // rätt lösenord: nollställ räknarna för just den här e-postadressen (inte IP-spärren)
+  reset(limits.filter((l) => !l.key.startsWith("login-ip:")).map((l) => l.key));
   await createSession(u.id);
   redirect("/");
 }
@@ -63,7 +70,9 @@ export async function register(_: AuthState, fd: FormData): Promise<AuthState> {
   if (userCount > 0 && process.env.FLYGKOLL_OPEN_SIGNUP === "0") {
     return { error: "Registrering är stängd. Be en administratör lägga till dig under Organisation." };
   }
-  const limits: Limit[] = [{ key: `register:${await clientIp()}`, max: 5, windowMs: 60 * MIN }];
+  const ip = await clientIp();
+  // Utan betrodd proxy är klientens adress okänd – då gäller en gemensam, högre gräns för alla (#31)
+  const limits: Limit[] = ip ? [{ key: `register:${ip}`, max: 5, windowMs: 60 * MIN }] : [{ key: "register-all", max: 30, windowMs: 60 * MIN }];
   const wait = blockedFor(limits);
   if (wait > 0) return { error: `För många registreringar från din adress. ${waitText(wait)}` };
   if (!isEmail(email)) return { error: "Ange en giltig e-postadress." };
@@ -74,13 +83,19 @@ export async function register(_: AuthState, fd: FormData): Promise<AuthState> {
   const orgId = newId();
   const userId = newId();
   const pwHash = await hashPassword(password);
-  db.transaction(() => {
-    db.prepare("INSERT INTO orgs (id, name) VALUES (?, ?)").run(orgId, orgName);
-    db.prepare("INSERT INTO users (id, org_id, email, password_hash, first_name, last_name, role) VALUES (?, ?, ?, ?, ?, ?, 'admin')").run(
-      userId, orgId, email, pwHash, firstName, lastName
-    );
-    seedOrg(orgId);
-  })();
+  try {
+    db.transaction(() => {
+      db.prepare("INSERT INTO orgs (id, name) VALUES (?, ?)").run(orgId, orgName);
+      db.prepare("INSERT INTO users (id, org_id, email, password_hash, first_name, last_name, role) VALUES (?, ?, ?, ?, ?, ?, 'admin')").run(
+        userId, orgId, email, pwHash, firstName, lastName
+      );
+      seedOrg(orgId);
+    })();
+  } catch (e) {
+    // två samtidiga registreringar kan båda passera kontrollen ovan; transaktionen rullas tillbaka (#37)
+    if (isUniqueViolation(e)) return { error: "E-postadressen används redan." };
+    throw e;
+  }
   await createSession(userId);
   redirect("/");
 }

@@ -3,7 +3,8 @@
 import { revalidatePath } from "next/cache";
 import { requireUser, requireAdmin, requireWriter, hashPassword, verifyPassword, currentSessionToken } from "@/lib/auth";
 import { db, newId } from "@/lib/db";
-import { THEMES, isEmail, oneOf, optNumber, passwordProblem, text } from "@/lib/validate";
+import { getAccessibleBriefing } from "@/lib/access";
+import { THEMES, isEmail, isUniqueViolation, oneOf, optNumber, passwordProblem, text } from "@/lib/validate";
 
 async function fileToDataUrl(f: File | null, maxBytes: number) {
   if (!f || f.size === 0) return null;
@@ -100,12 +101,23 @@ export async function addMember(_: FormState, fd: FormData): Promise<FormState> 
   if (!isEmail(email)) return { error: "Ogiltig e-post." };
   const pwErr = passwordProblem(pw, email);
   if (pwErr) return { error: `Tillfälligt lösenord: ${pwErr}` };
-  if (db.prepare("SELECT 1 FROM users WHERE email = ?").get(email)) return { error: "E-postadressen finns redan." };
+  const taken = db.prepare("SELECT org_id, disabled_at FROM users WHERE email = ?").get(email) as { org_id: string; disabled_at: string | null } | undefined;
+  if (taken) {
+    // en inaktiverad medlem i den egna organisationen återaktiveras i stället för att läggas till på nytt (#36)
+    if (taken.org_id === user.org_id && taken.disabled_at) return { error: "Personen är inaktiverad – återaktivera hen under Inaktiverade medlemmar." };
+    return { error: "E-postadressen finns redan." };
+  }
 
   const pwHash = await hashPassword(pw);
-  db.prepare("INSERT INTO users (id, org_id, email, password_hash, first_name, last_name, role, must_change_password) VALUES (?, ?, ?, ?, ?, ?, ?, 1)").run(
-    newId(), user.org_id, email, pwHash, text(fd.get("first_name"), 100), text(fd.get("last_name"), 100), role
-  );
+  try {
+    db.prepare("INSERT INTO users (id, org_id, email, password_hash, first_name, last_name, role, must_change_password) VALUES (?, ?, ?, ?, ?, ?, ?, 1)").run(
+      newId(), user.org_id, email, pwHash, text(fd.get("first_name"), 100), text(fd.get("last_name"), 100), role
+    );
+  } catch (e) {
+    // samtidigt anrop med samma e-post hann före (#37)
+    if (isUniqueViolation(e)) return { error: "E-postadressen finns redan." };
+    throw e;
+  }
   revalidatePath("/org");
   return { ok: `${email} har lagts till. Dela det tillfälliga lösenordet med personen. Vid inloggning krävs lösenordsbyte.` };
 }
@@ -128,12 +140,22 @@ export async function removeMember(userId: string) {
   revalidatePath("/org");
 }
 
+/** Återaktiverar en inaktiverad medlem. Rollen och historiken finns kvar sedan inaktiveringen (#36). */
+export async function reactivateMember(userId: string) {
+  const admin = await requireAdmin();
+  db.prepare("UPDATE users SET disabled_at = NULL WHERE id = ? AND org_id = ?").run(userId, admin.org_id);
+  revalidatePath("/org");
+}
+
+const ZONE_RADIUS = { min: 50, max: 10_000 } as const;
+
 export async function addZone(fd: FormData) {
   const user = await requireWriter();
-  const lat = Number(fd.get("lat")), lon = Number(fd.get("lon"));
-  if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
+  const lat = optNumber(fd.get("lat"), -90, 90), lon = optNumber(fd.get("lon"), -180, 180);
+  if (lat === null || lon === null) return;
+  const radius = Math.round(optNumber(fd.get("radius"), ZONE_RADIUS.min, ZONE_RADIUS.max) ?? 500);
   db.prepare("INSERT INTO zones (id, org_id, name, lat, lon, radius_m) VALUES (?, ?, ?, ?, ?, ?)").run(
-    newId(), user.org_id, String(fd.get("name") || "Zon"), lat, lon, Math.round(Number(fd.get("radius")) || 500)
+    newId(), user.org_id, text(fd.get("name"), 200) || "Zon", lat, lon, radius
   );
   revalidatePath("/org");
   revalidatePath("/briefings/new");
@@ -141,11 +163,10 @@ export async function addZone(fd: FormData) {
 
 export async function zoneFromBriefing(briefingId: string) {
   const user = await requireWriter();
-  const b = db.prepare("SELECT name, lat, lon, radius_m FROM briefings WHERE id = ? AND org_id = ?").get(briefingId, user.org_id) as
-    | { name: string; lat: number; lon: number; radius_m: number }
-    | undefined;
+  // privata briefingar (shared = 0) får bara ägaren använda (#33)
+  const b = getAccessibleBriefing<{ name: string; lat: number; lon: number; radius_m: number }>(user, briefingId, "name, lat, lon, radius_m");
   if (!b) return;
-  db.prepare("INSERT INTO zones (id, org_id, name, lat, lon, radius_m) VALUES (?, ?, ?, ?, ?, ?)").run(newId(), user.org_id, b.name, b.lat, b.lon, b.radius_m);
+  db.prepare("INSERT INTO zones (id, org_id, name, lat, lon, radius_m) VALUES (?, ?, ?, ?, ?, ?)").run(newId(), user.org_id, text(b.name, 200), b.lat, b.lon, b.radius_m);
   revalidatePath("/org");
   revalidatePath(`/briefings/${briefingId}`);
 }

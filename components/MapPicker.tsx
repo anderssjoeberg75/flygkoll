@@ -22,6 +22,7 @@ export function MapPicker({
   const [ready, setReady] = useState(false);
   const [q, setQ] = useState("");
   const [results, setResults] = useState<{ display_name: string; lat: string; lon: string }[]>([]);
+  const [searchError, setSearchError] = useState("");
 
   useEffect(() => {
     let cancelled = false;
@@ -56,8 +57,10 @@ export function MapPicker({
   async function search(e: React.FormEvent | React.KeyboardEvent) {
     e.preventDefault();
     if (!q.trim()) return;
-    const r = await fetch(`/api/geocode?q=${encodeURIComponent(q)}`);
-    setResults(r.ok ? await r.json() : []);
+    const r = await fetch(`/api/geocode?q=${encodeURIComponent(q.trim().slice(0, 200))}`);
+    const body = await r.json().catch(() => null);
+    setResults(r.ok && Array.isArray(body) ? body : []);
+    setSearchError(r.ok ? "" : (body && typeof body.error === "string" && (r.status === 429 || r.status === 503) ? body.error : "Sökningen misslyckades."));
   }
 
   function go(lat: number, lon: number, r?: number) {
@@ -86,6 +89,7 @@ export function MapPicker({
           Min position
         </button>
       </div>
+      {searchError && <p className="small muted" role="status" style={{ margin: 0 }}>{searchError}</p>}
       {results.length > 0 && (
         <div className="card" style={{ padding: 6 }}>
           {results.map((r) => (
@@ -111,7 +115,7 @@ export function MapPicker({
         </div>
         <div>
           <label>Exakt radie (m)</label>
-          <input type="number" min={50} max={20000} value={radius} onChange={(e) => setRadius(Math.max(50, +e.target.value))} />
+          <input type="number" min={50} max={10000} value={radius} onChange={(e) => setRadius(Math.min(10000, Math.max(50, +e.target.value || 50)))} />
         </div>
       </div>
       <p className="small muted" style={{ margin: 0 }}>

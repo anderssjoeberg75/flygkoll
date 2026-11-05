@@ -49,6 +49,15 @@ const memoryCache = new LruCache<unknown>(500);
 
 let lastNominatimRequestTime = 0;
 const nominatimQueue: (() => void)[] = [];
+/** Med ~1 anrop/s motsvarar detta högst ~20 s väntan. Fler köade anrop avvisas direkt (#35). */
+export const NOMINATIM_MAX_QUEUE = 20;
+
+export class BusyError extends Error {
+  constructor() {
+    super("Platssökningen är upptagen just nu – försök igen om en stund.");
+    this.name = "BusyError";
+  }
+}
 let nominatimTimer: NodeJS.Timeout | null = null;
 
 function processNominatimQueue() {
@@ -67,6 +76,7 @@ function processNominatimQueue() {
 }
 
 function throttleNominatim<T>(fn: () => Promise<T>): Promise<T> {
+  if (nominatimQueue.length >= NOMINATIM_MAX_QUEUE) return Promise.reject(new BusyError());
   return new Promise<T>((resolve, reject) => {
     nominatimQueue.push(async () => {
       try {
@@ -84,27 +94,42 @@ function throttleNominatim<T>(fn: () => Promise<T>): Promise<T> {
 
 /* ---------- fetch helpers ---------- */
 
-async function fetchWithTimeout(url: string, ms = 15000, init: RequestInit = {}, retries = 1): Promise<Response> {
+type BodyKind = "json" | "text";
+
+/**
+ * Hämtar och läser svarskroppen. Timeouten gäller hela vägen tills kroppen är läst – inte bara
+ * tills headers har kommit – så att en seg källa inte kan hänga en briefing (#37).
+ */
+function fetchBody(url: string, kind: "json", ms?: number): Promise<unknown>;
+function fetchBody(url: string, kind: "text", ms?: number): Promise<string>;
+function fetchBody(url: string, kind: BodyKind, ms = 15000): Promise<unknown> {
   if (url.includes("nominatim.openstreetmap.org")) {
-    return throttleNominatim(() => doFetchWithTimeout(url, ms, init, retries));
+    return throttleNominatim(() => doFetchBody(url, kind, ms, 1));
   }
-  return doFetchWithTimeout(url, ms, init, retries);
+  return doFetchBody(url, kind, ms, 1);
 }
 
-async function doFetchWithTimeout(url: string, ms = 15000, init: RequestInit = {}, retries = 1): Promise<Response> {
+async function doFetchBody(url: string, kind: BodyKind, ms: number, retries: number): Promise<unknown> {
   const ctrl = new AbortController();
   const t = setTimeout(() => ctrl.abort(), ms);
   try {
-    const res = await fetch(url, { ...init, signal: ctrl.signal, headers: { "User-Agent": UA, ...(init.headers || {}) }, cache: "no-store" });
-    if (res.status >= 500 && retries > 0) return doFetchWithTimeout(url, ms, init, retries - 1);
-    if (!res.ok) throw new Error(`HTTP ${res.status} från ${new URL(url).host}`);
-    return res;
-  } catch (e) {
-    // nätverksfel (inte timeout) – försök en gång till
-    if (retries > 0 && !(e instanceof Error && e.name === "AbortError") && !(e instanceof Error && e.message.startsWith("HTTP"))) {
-      return doFetchWithTimeout(url, ms, init, retries - 1);
+    const res = await fetch(url, { signal: ctrl.signal, headers: { "User-Agent": UA }, cache: "no-store" });
+    if (res.status >= 500 && retries > 0) {
+      await res.body?.cancel().catch(() => {});
+      return doFetchBody(url, kind, ms, retries - 1);
     }
-    if (e instanceof Error && e.name === "AbortError") throw new Error(`Timeout från ${new URL(url).host}`);
+    if (!res.ok) {
+      await res.body?.cancel().catch(() => {});
+      throw new Error(`HTTP ${res.status} från ${new URL(url).host}`);
+    }
+    return kind === "json" ? await res.json() : await res.text();
+  } catch (e) {
+    const aborted = ctrl.signal.aborted || (e instanceof Error && e.name === "AbortError");
+    // nätverksfel (inte timeout, HTTP-fel eller trasig JSON) – försök en gång till
+    if (retries > 0 && !aborted && !(e instanceof Error && e.message.startsWith("HTTP")) && !(e instanceof SyntaxError)) {
+      return doFetchBody(url, kind, ms, retries - 1);
+    }
+    if (aborted) throw new Error(`Timeout från ${new URL(url).host}`);
     throw e;
   } finally {
     clearTimeout(t);
@@ -125,7 +150,7 @@ async function diskCachedJson<T>(key: string, url: string, ttlMs: number, timeou
   }
   if (!inflight.has(key)) {
     const p = (async () => {
-      const data = await (await fetchWithTimeout(url, timeoutMs)).json();
+      const data = await fetchBody(url, "json", timeoutMs);
       await fs.mkdir(DISK_DIR, { recursive: true });
       await fs.writeFile(file, JSON.stringify(data));
       return data;
@@ -143,7 +168,7 @@ export function within<T>(p: Promise<T>, ms: number, msg: string): Promise<T> {
 async function cachedJson<T>(url: string, ttlMs: number, timeoutMs = 15000): Promise<T> {
   const hit = memoryCache.get(url);
   if (hit !== undefined) return hit as T;
-  const data = (await (await fetchWithTimeout(url, timeoutMs)).json()) as T;
+  const data = (await fetchBody(url, "json", timeoutMs)) as T;
   memoryCache.set(url, data, ttlMs);
   return data;
 }
@@ -151,7 +176,7 @@ async function cachedJson<T>(url: string, ttlMs: number, timeoutMs = 15000): Pro
 async function cachedText(url: string, ttlMs: number): Promise<string> {
   const hit = memoryCache.get(url);
   if (hit !== undefined) return hit as string;
-  const data = await (await fetchWithTimeout(url, 30000)).text();
+  const data = await fetchBody(url, "text", 30000);
   memoryCache.set(url, data, ttlMs);
   return data;
 }

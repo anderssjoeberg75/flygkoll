@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { requireUser, displayName } from "@/lib/auth";
 import { db } from "@/lib/db";
+import { escapeLike } from "@/lib/validate";
 import { fmtDateTime, STATUS_LABEL } from "@/lib/format";
 import { deleteBriefing } from "./actions";
 
@@ -9,13 +10,14 @@ type Row = { id: string; name: string; flight_time: string; status: string; radi
 export default async function Briefings({ searchParams }: { searchParams: Promise<{ q?: string; scope?: string }> }) {
   const user = await requireUser();
   const { q = "", scope = "mine" } = await searchParams;
-  const like = `%${q}%`;
+  // % och _ i sökordet ska matcha bokstavligt (#37)
+  const like = `%${escapeLike(String(q).slice(0, 200))}%`;
   const rows = db
     .prepare(
       `SELECT b.id, b.name, b.flight_time, b.status, b.radius_m, b.user_id, b.shared, b.created_at, u.first_name, u.last_name, u.email
        FROM briefings b JOIN users u ON u.id = b.user_id
        WHERE b.org_id = ? AND ${scope === "org" ? "(b.user_id = ? OR b.shared = 1)" : "b.user_id = ?"}
-       AND (b.name LIKE ? OR b.status LIKE ? OR b.id LIKE ?)
+       AND (b.name LIKE ? ESCAPE '\\' OR b.status LIKE ? ESCAPE '\\' OR b.id LIKE ? ESCAPE '\\')
        ORDER BY b.created_at DESC LIMIT 300`
     )
     .all(user.org_id, user.id, like, like, like) as Row[];

@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import * as turf from "@turf/turf";
 import type { Geometry, Position } from "geojson";
-import { getUser } from "@/lib/auth";
+import { getActiveUser } from "@/lib/auth";
 import { safeJson } from "@/lib/validate";
 import { db } from "@/lib/db";
 import type { BriefingResult } from "@/lib/briefing";
@@ -24,7 +24,7 @@ function geom(g: Geometry): string {
 const COLORS: Record<string, string> = { permission: "ff2626dc", caution: "ff0b9ef5", info: "ffd6a00d", op: "ff6e760f" };
 
 export async function GET(_: Request, { params }: { params: Promise<{ id: string }> }) {
-  const user = await getUser();
+  const user = await getActiveUser();
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   const { id } = await params;
   const row = db.prepare("SELECT name, result FROM briefings WHERE id = ? AND org_id = ? AND (user_id = ? OR shared = 1)").get(id, user.org_id, user.id) as

@@ -1,11 +1,11 @@
 import { NextResponse } from "next/server";
-import { getUser } from "@/lib/auth";
+import { getActiveUser } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { fmtDateTime } from "@/lib/format";
 import { csvCell as q } from "@/lib/validate";
 
 export async function GET() {
-  const user = await getUser();
+  const user = await getActiveUser();
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   const rows = db
     .prepare(

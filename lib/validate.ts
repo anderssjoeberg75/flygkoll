@@ -24,6 +24,14 @@ export function isEmail(s: string): boolean {
 /** Text begränsad till max tecken. */
 export const text = (v: unknown, max: number) => String(v ?? "").trim().slice(0, max);
 
+/** Unika, sorterade punktindex i [0, n) från en (opålitlig) lista över avbockade punkter. */
+export function checkedItems(v: unknown, n: number): number[] {
+  if (!Array.isArray(v)) return [];
+  const set = new Set<number>();
+  for (const x of v) if (Number.isInteger(x) && x >= 0 && x < n) set.add(x);
+  return [...set].sort((a, b) => a - b);
+}
+
 /* ---------- lösenord ---------- */
 
 export const MIN_PASSWORD = 10;
@@ -95,6 +103,17 @@ export function csvCell(v: unknown): string {
   if (typeof v === "string" && /^[=+\-@\t\r]/.test(s)) s = "'" + s;
   return `"${s.replace(/"/g, '""')}"`;
 }
+
+/* ---------- databasfel ---------- */
+
+/** Sant om felet är en UNIQUE-konflikt från SQLite (t.ex. två samtidiga registreringar, #37). */
+export function isUniqueViolation(e: unknown): boolean {
+  const code = (e as { code?: unknown } | null)?.code;
+  return code === "SQLITE_CONSTRAINT_UNIQUE" || code === "SQLITE_CONSTRAINT_PRIMARYKEY";
+}
+
+/** Escapar % _ och \ för LIKE ... ESCAPE '\' så att sökord matchas bokstavligt (#37). */
+export const escapeLike = (s: string) => s.replace(/[\\%_]/g, (c) => "\\" + c);
 
 /* ---------- JSON från databasen ---------- */
 

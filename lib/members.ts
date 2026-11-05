@@ -26,3 +26,15 @@ export function orgMembers(orgId: string) {
   }[];
   return rows.map((r) => ({ ...r, name: displayName(r) }));
 }
+
+/** Inaktiverade medlemmar – visas för administratörer så att de kan återaktiveras (#36). */
+export function disabledMembers(orgId: string) {
+  const rows = db
+    .prepare(
+      `SELECT id, first_name, last_name, email, role, disabled_at FROM users
+       WHERE org_id = ? AND disabled_at IS NOT NULL AND disabled_at != ''
+       ORDER BY disabled_at DESC`
+    )
+    .all(orgId) as { id: string; first_name: string; last_name: string; email: string; role: string; disabled_at: string }[];
+  return rows.map((r) => ({ ...r, name: displayName(r) }));
+}

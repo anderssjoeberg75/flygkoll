@@ -119,6 +119,49 @@ function trimProps(p: Record<string, unknown> | null): Record<string, unknown> {
   return out;
 }
 
+/**
+ * Källor vars bortfall gör att briefingen kan visa grönt trots att något hindrar flygningen:
+ * alla LFV-lager, naturskydd (nationalparker kräver tillstånd) och SMHI-prognosen (åska, sikt,
+ * kyla och vind). Övriga källor ger bara en varning (#34).
+ */
+const CRITICAL_OTHER = new Set(["nr", "n2k", "smhi"]);
+
+/** Delar upp fallerade källor i kritiska (ger status INCOMPLETE) och övriga (ger en varning). */
+export function assessSources(sources: SourceStatus[]) {
+  const failed = sources.filter((s) => !s.ok);
+  const isCritical = (s: SourceStatus) => s.group === "LFV" || CRITICAL_OTHER.has(s.key);
+  return { critical: failed.filter(isCritical), minor: failed.filter((s) => !isCritical(s)) };
+}
+
+/** Notiser om saknade källor, i den ordning de ska visas. */
+export function sourceNotices(sources: SourceStatus[]): BriefingResult["notices"] {
+  const { critical, minor } = assessSources(sources);
+  const notices: BriefingResult["notices"] = [];
+  if (critical.length > 0) {
+    const lfv = critical.some((s) => s.group === "LFV");
+    const nature = critical.some((s) => s.key === "nr" || s.key === "n2k");
+    const weather = critical.some((s) => s.key === "smhi");
+    const consequences = [
+      lfv && "Luftrumsrestriktioner kan föreligga som inte syns i briefingen – kontrollera alltid Drönarkartan/AROWeb manuellt.",
+      nature && "Nationalparker och naturreservat kan beröra området utan att visas – kontrollera Skyddad natur (Naturvårdsverket).",
+      weather && "Åska, sikt, kyla och vind i flygfönstret har inte kunnat kontrolleras – kontrollera väderprognosen själv.",
+    ].filter(Boolean);
+    notices.push({
+      level: "danger",
+      title: lfv ? "Ofullständigt underlag (LFV-fel)" : "Ofullständigt underlag",
+      text: `Kunde inte hämta data från ${critical.map((s) => s.label).join(", ")}. ${consequences.join(" ")}`,
+    });
+  }
+  if (minor.length > 0) {
+    notices.push({
+      level: "warn",
+      title: "Vissa kontroller saknas",
+      text: `Kunde inte hämta data från ${minor.map((s) => s.label).join(", ")}. Motsvarande kontroller ingår inte i briefingen.`,
+    });
+  }
+  return notices;
+}
+
 async function settle<T>(sources: SourceStatus[], key: string, label: string, group: SourceStatus["group"], fn: () => Promise<T>): Promise<T | null> {
   try {
     const r = await fn();
@@ -204,7 +247,8 @@ export async function buildBriefing(opts: {
     settle(sources, "n2k", "Natura 2000", "Övrigt", () => within(natura2000(viewBbox), 12000, "Stort område – laddas i bakgrunden. Uppdatera briefingen om en minut.")),
     settle(sources, "kp", "Kp-index (NOAA SWPC)", "Övrigt", () => kpForecast(from, to)),
     settle(sources, "gnss", "GPS-störning (GPSJam)", "Övrigt", () => gpsInterference(lat, lon)),
-    reverseGeocode(lat, lon).catch(() => `${lat.toFixed(4)}, ${lon.toFixed(4)}`),
+    // platsnamnet är bara kosmetiskt: vänta inte på en full Nominatim-kö (#35)
+    within(reverseGeocode(lat, lon), 4000, "Platsnamn dröjer").catch(() => `${lat.toFixed(4)}, ${lon.toFixed(4)}`),
   ]);
 
   const hits: AreaHit[] = [];
@@ -374,8 +418,8 @@ export async function buildBriefing(opts: {
   const worst = hits.reduce((m, h) => Math.max(m, sevRank[h.severity]), 0);
   let status: BriefingResult["status"] = worst === 2 ? "PERMISSION" : worst === 1 ? "CAUTION" : "OK";
 
-  const failedLfv = sources.filter((s) => s.group === "LFV" && !s.ok);
-  if (failedLfv.length > 0) {
+  // ett grönt/gult besked får inte ges när en kritisk källa saknas (#1, #34)
+  if (assessSources(sources).critical.length > 0) {
     status = status === "PERMISSION" ? "PERMISSION" : "INCOMPLETE";
   }
 
@@ -417,14 +461,7 @@ export async function buildBriefing(opts: {
   const sun = { sunrise: safe(sc.sunrise), sunset: safe(sc.sunset), dawn: safe(sc.dawn), dusk: safe(sc.dusk) };
   const sunUpAt = (d: Date) => SunCalc.getPosition(d, lat, lon).altitude > -0.833 * (Math.PI / 180);
 
-  const notices: BriefingResult["notices"] = [];
-  if (failedLfv.length > 0) {
-    notices.push({
-      level: "danger",
-      title: "Ofullständigt luftrumsunderlag (LFV-fel)",
-      text: `Kunde inte hämta data från ${failedLfv.map((s) => s.label).join(", ")}. Luftrumsrestriktioner kan föreligga som inte syns i briefingen. Kontrollera alltid Drönarkartan/AROWeb manuellt!`,
-    });
-  }
+  const notices: BriefingResult["notices"] = sourceNotices(sources);
 
   const windNow = wp[0]?.w10 ?? atStart?.wind ?? null;
   const windMax = Math.max(

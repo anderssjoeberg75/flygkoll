@@ -3,7 +3,7 @@ import { notFound } from "next/navigation";
 import { requireUser } from "@/lib/auth";
 import { safeJson } from "@/lib/validate";
 import { db } from "@/lib/db";
-import type { BriefingResult } from "@/lib/briefing";
+import { assessSources, type BriefingResult } from "@/lib/briefing";
 import { fmtDateTime, fmtTime, STATUS_LABEL, SEVERITY_LABEL, compass } from "@/lib/format";
 import { GeoMap } from "@/components/GeoMap";
 import { WindProfile } from "@/components/WindProfile";
@@ -13,8 +13,9 @@ import { StatusRing } from "@/components/StatusRing";
 import { rerunBriefing, toggleShare, renameBriefing } from "../actions";
 import { zoneFromBriefing } from "../../settings/actions";
 
-export default async function BriefingPage({ params }: { params: Promise<{ id: string }> }) {
+export default async function BriefingPage({ params, searchParams }: { params: Promise<{ id: string }>; searchParams?: Promise<{ limit?: string }> }) {
   const { id } = await params;
+  const limited = (await searchParams)?.limit === "1";
   const user = await requireUser();
   const row = db
     .prepare("SELECT * FROM briefings WHERE id = ? AND org_id = ? AND (user_id = ? OR shared = 1)")
@@ -32,6 +33,7 @@ export default async function BriefingPage({ params }: { params: Promise<{ id: s
   const lfvSources = r.sources.filter((s) => s.group === "LFV");
   const otherSources = r.sources.filter((s) => s.group !== "LFV");
   const isOwner = row.user_id === user.id;
+  const missingCritical = assessSources(r.sources).critical;
   const backgroundPending = r.sources.some((s) => (s.key === "nr" || s.key === "n2k") && !s.ok && s.error?.includes("bakgrunden"));
 
   return (
@@ -68,10 +70,17 @@ export default async function BriefingPage({ params }: { params: Promise<{ id: s
         </div>
       )}
 
+      {limited && (
+        <div className="notice n-warn" style={{ marginBottom: 16 }}>
+          <strong>För många briefingar på kort tid</strong>
+          Vänta en stund och försök sedan uppdatera igen.
+        </div>
+      )}
+
       {r.status === "INCOMPLETE" && (
         <div className="notice n-danger" style={{ marginBottom: 16 }}>
-          <strong>Ofullständigt luftrumsunderlag</strong>
-          En eller flera officiella LFV-källor svarade inte ({lfvSources.filter((s) => !s.ok).map((s) => s.label).join(", ") || "LFV"}). Flygförbud eller restriktioner kan föreligga som inte syns i briefingen. Kontrollera alltid AROWeb eller Drönarkartan manuellt innan flygning!
+          <strong>Ofullständigt underlag</strong>
+          En eller flera källor svarade inte ({missingCritical.map((s) => s.label).join(", ") || "LFV"}). Flygförbud, restriktioner, skyddade områden eller farligt väder kan föreligga som inte syns i briefingen. Kontrollera alltid AROWeb/Drönarkartan, Skyddad natur och väderprognosen manuellt innan flygning!
         </div>
       )}
 
